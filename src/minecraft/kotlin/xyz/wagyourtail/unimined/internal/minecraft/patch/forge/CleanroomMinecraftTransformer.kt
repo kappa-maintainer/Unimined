@@ -142,6 +142,9 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
                 return null
             }
         }
+        if (library.name.startsWith("ca.weblite:java-objc-bridge:")) {
+            return library.copy(natives = emptyMap())
+        }
         return super.libraryFilter(library)
     }
 
