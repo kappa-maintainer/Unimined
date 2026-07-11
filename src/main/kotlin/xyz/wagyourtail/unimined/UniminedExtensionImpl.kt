@@ -330,6 +330,7 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         project.repositories.maven {
             it.name = "cleanroom-$it"
             it.url = URI.create("https://repo.cleanroommc.com/$name")
+            it.content { it.excludeGroup("curse.maven") }
         }
     }
 
@@ -342,6 +343,7 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         project.repositories.maven {
             it.name = "arcseekers"
             it.url = URI.create("https://maven.arcseekers.com/releases")
+            it.content { it.excludeGroup("curse.maven") }
         }
     }
 
