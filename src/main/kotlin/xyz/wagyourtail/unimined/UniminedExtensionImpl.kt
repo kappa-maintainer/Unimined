@@ -112,9 +112,9 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         return minecrafts.keys.find { it.name == sourceSetName } ?: throw IllegalArgumentException("no source set found for $sourceSetName")
     }
 
-    override val modsRemapRepo = project.repositories.flatDir {
+    override val modsRemapRepo = project.repositories.maven {
         it.name = "modsRemap"
-        it.dir(getLocalCache().resolve("modTransform").toFile())
+        it.url = getLocalCache().resolve("modTransform").toUri()
         it.content {
             it.includeGroupByRegex("remapped_.*")
         }

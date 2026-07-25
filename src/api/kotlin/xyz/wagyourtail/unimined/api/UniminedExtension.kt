@@ -3,7 +3,7 @@ package xyz.wagyourtail.unimined.api
 import groovy.lang.Closure
 import groovy.lang.DelegatesTo
 import org.gradle.api.Project
-import org.gradle.api.artifacts.repositories.FlatDirectoryArtifactRepository
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
 import org.gradle.api.tasks.SourceSet
 import org.jetbrains.annotations.ApiStatus
 import org.jetbrains.annotations.ApiStatus.ScheduledForRemoval
@@ -298,7 +298,7 @@ abstract class UniminedExtension(project: Project) : FabricLikeApiExtension(proj
         }
     }
 
-    abstract val modsRemapRepo: FlatDirectoryArtifactRepository
+    abstract val modsRemapRepo: MavenArtifactRepository
 
     abstract fun wagYourMaven(name: String)
     abstract fun minecraftForgeMaven()
