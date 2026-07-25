@@ -38,3 +38,4 @@ testing/**/run
 # Generated Docs
 Writerside/v.list
 docs/
+.pi*
