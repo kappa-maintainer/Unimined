@@ -118,11 +118,10 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             resolved[r] = r.file
         }
 
-        validateResolvedArtifacts(originalDeps[it], resolved.keys, "configuration ${it.name}")
         resolved
     }
 
-    private fun validateResolvedArtifacts(
+    private fun warnAboutMultipleResolvedArtifacts(
         dependencies: Collection<Dependency>,
         artifacts: Collection<ResolvedArtifact>,
         context: String
@@ -134,20 +133,36 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             val declarations = dependencies.filterIsInstance<ModuleDependency>().filter { dependency ->
                 dependency.group == module.group && dependency.name == module.name
             }
-            val declaredClassifiers = declarations.flatMap { dependency ->
-                if (dependency.artifacts.isEmpty()) listOf(null)
-                else dependency.artifacts.map { artifact -> artifact.classifier }
+            val declarationDetails = declarations.joinToString("\n") { dependency ->
+                val requestedArtifacts = if (dependency.artifacts.isEmpty()) {
+                    "default variant (no classifier specified)"
+                } else {
+                    dependency.artifacts.joinToString { artifact ->
+                        "classifier=${artifact.classifier ?: "<none>"}, extension=${artifact.extension ?: "jar"}"
+                    }
+                }
+                "  - $dependency [$requestedArtifacts]"
+            }.ifEmpty { "  - no direct declaration; resolved transitively" }
+            val artifactDetails = moduleArtifacts.joinToString("\n") { artifact ->
+                "  - ${artifact.stringify()} -> ${artifact.file.absolutePath}"
             }
-            require(null !in declaredClassifiers && declarations.isNotEmpty()) {
-                "Remapped mod module $module resolved to multiple artifacts in $context, but it was not " +
-                    "declared exclusively with classifiers: " +
-                    moduleArtifacts.joinToString { artifact -> artifact.stringify() }
+            val hasUnclassifiedDeclaration = declarations.any { dependency ->
+                dependency.artifacts.isEmpty() || dependency.artifacts.any { artifact -> artifact.classifier == null }
             }
-            val resolvedClassifiers = moduleArtifacts.map { artifact -> artifact.classifier }
-            require(resolvedClassifiers.all { classifier -> classifier != null && classifier in declaredClassifiers }) {
-                "Remapped mod module $module resolved classifiers $resolvedClassifiers in $context, but " +
-                    "the declared classifiers are $declaredClassifiers"
+            val risk = if (hasUnclassifiedDeclaration) {
+                "At least one declaration does not specify a classifier. Its Gradle metadata may select " +
+                    "multiple files; remapping all of them can place duplicate mods on the runtime classpath."
+            } else {
+                "No direct unclassified declaration was found; all resolved files will still be remapped " +
+                    "and published together."
             }
+            project.logger.warn(
+                "[Unimined/ModRemapper] Module $module resolved to ${moduleArtifacts.size} artifacts in $context. " +
+                    "All artifacts will be remapped and published together.\n" +
+                    "Declared dependencies:\n$declarationDetails\n" +
+                    "Resolved artifacts:\n$artifactDetails\n" +
+                    risk
+            )
         }
     }
 
@@ -290,7 +305,7 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             for (map in originalDepsFiles.values) {
                 mods.putAll(map)
             }
-            validateResolvedArtifacts(
+            warnAboutMultipleResolvedArtifacts(
                 configurations.flatMap { configuration -> originalDeps[configuration] },
                 mods.keys,
                 "the configured remap inputs"
