@@ -4,9 +4,9 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.File
 
 buildscript {
-	dependencies {
-		classpath(libs.jgit)
-	}
+    dependencies {
+        classpath(libs.jgit)
+    }
 }
 
 plugins {
@@ -16,7 +16,15 @@ plugins {
     `maven-publish`
 }
 
-version = if (project.hasProperty("version_snapshot")) project.properties["version"] as String + "-SNAPSHOT" else project.properties["version"] as String
+version =
+    if (project.hasProperty(
+            "version_snapshot",
+        )
+    ) {
+        project.properties["version"] as String + "-SNAPSHOT"
+    } else {
+        project.properties["version"] as String
+    }
 group = project.properties["maven_group"] as String
 
 base {
@@ -25,19 +33,19 @@ base {
 
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
+        languageVersion.set(JavaLanguageVersion.of(25))
     }
     withSourcesJar()
 }
 
 tasks.withType<JavaCompile>().configureEach {
-    options.release.set(8)
+    options.release.set(25)
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(25)
     compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_1_8)
+        jvmTarget.set(JvmTarget.JVM_25)
     }
 }
 
@@ -159,19 +167,30 @@ tasks.jar {
         sourceSets["mods"].output,
         sourceSets["runs"].output,
         sourceSets["minecraft"].output,
-        sourceSets["main"].output
+        sourceSets["main"].output,
     )
 
     manifest {
         attributes(
-            "Implementation-Version" to if (project.hasProperty("version_snapshot")) {
-                buildString {
-                    append(project.version.toString().removeSuffix("-SNAPSHOT"))
-                    append("-")
-                    append(Git.open(rootDir).repository.resolve("HEAD").abbreviate(7).name().trim())
-                    append("-SNAPSHOT")
-                }
-            } else project.version
+            "Implementation-Version" to
+                if (project.hasProperty("version_snapshot")) {
+                    buildString {
+                        append(project.version.toString().removeSuffix("-SNAPSHOT"))
+                        append("-")
+                        append(
+                            Git
+                                .open(rootDir)
+                                .repository
+                                .resolve("HEAD")
+                                .abbreviate(7)
+                                .name()
+                                .trim(),
+                        )
+                        append("-SNAPSHOT")
+                    }
+                } else {
+                    project.version
+                },
         )
     }
 }
@@ -184,7 +203,7 @@ val sourcesJar by tasks.getting(Jar::class) {
         sourceSets["source"].allSource,
         mods.allSource,
         runs.allSource,
-        main.allSource
+        main.allSource,
     )
 }
 
@@ -203,31 +222,31 @@ tasks.test {
 }
 
 tasks.dokkaGenerate {
-	doFirst {
-		file("Writerside/v.list").writeText(
-			"""
-                <?xml version="1.0" encoding="UTF-8"?>
-                <!DOCTYPE vars SYSTEM "https://resources.jetbrains.com/writerside/1.0/vars.dtd">
-                <vars>
-                    <var name="version" value="${project.version}"/>
-                </vars>
-            """.trimIndent()
-		)
-	}
+    doFirst {
+        file("Writerside/v.list").writeText(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE vars SYSTEM "https://resources.jetbrains.com/writerside/1.0/vars.dtd">
+            <vars>
+                <var name="version" value="${project.version}"/>
+            </vars>
+            """.trimIndent(),
+        )
+    }
 }
 
 dokka {
-	moduleName.set(project.displayName)
-	dokkaSourceSets.main {
-		suppress = true
-	}
-	dokkaSourceSets.named("api") {
-		suppress = false
-	}
+    moduleName.set(project.displayName)
+    dokkaSourceSets.main {
+        suppress = true
+    }
+    dokkaSourceSets.named("api") {
+        suppress = false
+    }
 
-	dokkaPublications.html {
-		outputDirectory.set(projectDir.resolve("docs/api-docs/"))
-	}
+    dokkaPublications.html {
+        outputDirectory.set(projectDir.resolve("docs/api-docs/"))
+    }
 }
 
 gradlePlugin {
@@ -262,18 +281,22 @@ val writeActionsTestMatrix by tasks.registering {
         file("src/test/kotlin/xyz/wagyourtail/unimined/test/integration").listFiles()?.forEach {
             if (it.name.endsWith("Test.kt") && !broken.contains(it.name)) {
                 val testName = it.name.replace(".kt", "")
-                val testPath = "xyz.wagyourtail.unimined.test.integration.${testName}"
-                testMatrix.add(mapOf(
-                    "name" to formatTestName(testName),
-                    "path" to testPath
-                ))
+                val testPath = "xyz.wagyourtail.unimined.test.integration.$testName"
+                testMatrix.add(
+                    mapOf(
+                        "name" to formatTestName(testName),
+                        "path" to testPath,
+                    ),
+                )
             }
         }
 
-        testMatrix.add(mapOf(
-            "name" to "Util",
-            "path" to "xyz.wagyourtail.unimined.util.*"
-        ))
+        testMatrix.add(
+            mapOf(
+                "name" to "Util",
+                "path" to "xyz.wagyourtail.unimined.util.*",
+            ),
+        )
 
         val json = groovy.json.JsonOutput.toJson(testMatrix.sortedBy { it["name"] })
         val output = file("build/test_matrix.json")
@@ -290,6 +313,6 @@ fun formatTestName(name: String): String {
         val version = testName.substring(index).replace("_", ".")
         "$loader $version"
     } else {
-       testName
+        testName
     }
 }

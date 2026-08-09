@@ -487,6 +487,56 @@ class MCPConfig(
         }
     }
 
+    private var stripMappingsPath: Path? = null
+    private var stripMappingsCache: Set<String>? = null
+
+    /**
+     * Parse the class names from the strip mappings (joined.tsrg). Both stripClient and
+     * stripServer run against the same mappings file, so the parse is memoized per MCPConfig
+     * instance (execution is sequential, so no locking is needed).
+     */
+    private fun parseStripClassNames(mappingPath: Path): Set<String> {
+        if (stripMappingsPath == mappingPath && stripMappingsCache != null) {
+            project.logger.info("Reusing parsed strip mappings for {}", mappingPath)
+            return stripMappingsCache!!
+        }
+        val mappings = mutableSetOf<String>()
+        val mappingNs = Namespace("source")
+        runBlocking {
+            mappingPath.source().buffer().use {
+                val format =
+                    FormatRegistry.autodetectFormat(EnvType.JOINED, mappingPath.name, it)
+                        ?: error("Failed to detect mapping format for $mappingPath")
+                format.read(
+                    // avoid the extra full-string copy of replace("\r", "") when the file
+                    // uses plain LF line endings (the common case for tsrg)
+                    StringCharReader(
+                        it.readUtf8().let { text -> if (text.indexOf('\r') >= 0) text.replace("\r", "") else text },
+                    ),
+                    null,
+                    EmptyMappingVisitor().delegator(
+                        object : Delegator() {
+                            override fun visitClass(
+                                delegate: MappingVisitor,
+                                names: Map<Namespace, InternalName>,
+                            ): ClassVisitor? {
+                                names[mappingNs]?.let {
+                                    mappings.add(it.toString())
+                                }
+                                return null
+                            }
+                        },
+                    ),
+                    EnvType.JOINED,
+                    mapOf("obf" to "source"),
+                )
+            }
+        }
+        stripMappingsPath = mappingPath
+        stripMappingsCache = mappings
+        return mappings
+    }
+
     inner class StripStep(
         override val name: String,
         override var prev: String?,
@@ -509,34 +559,7 @@ class MCPConfig(
             val output = dir.resolve("${name}Output.jar")
 
             val mappingPath = Paths.get(variables.getValue("mappings").invoke())
-            val mappings = mutableSetOf<String>()
-            val mappingNs = Namespace("source")
-            runBlocking {
-                mappingPath.source().buffer().use {
-                    val format =
-                        FormatRegistry.autodetectFormat(EnvType.JOINED, mappingPath.name, it)
-                            ?: error("Failed to detect mapping format for $mappingPath")
-                    format.read(
-                        StringCharReader(it.readUtf8().replace("\r", "")),
-                        null,
-                        EmptyMappingVisitor().delegator(
-                            object : Delegator() {
-                                override fun visitClass(
-                                    delegate: MappingVisitor,
-                                    names: Map<Namespace, InternalName>,
-                                ): ClassVisitor? {
-                                    names[mappingNs]?.let {
-                                        mappings.add(it.toString())
-                                    }
-                                    return null
-                                }
-                            },
-                        ),
-                        EnvType.JOINED,
-                        mapOf("obf" to "source"),
-                    )
-                }
-            }
+            val mappings = parseStripClassNames(mappingPath)
 
             JarArchiveOutputStream(output.outputStream()).use { out ->
                 input.forEachInZip { name, inputStream ->
