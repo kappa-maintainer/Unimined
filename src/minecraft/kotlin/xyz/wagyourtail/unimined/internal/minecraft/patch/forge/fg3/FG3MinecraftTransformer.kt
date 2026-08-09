@@ -50,6 +50,7 @@ import xyz.wagyourtail.unimined.internal.minecraft.transform.merge.ClassMerger
 import xyz.wagyourtail.unimined.mapping.EnvType
 import xyz.wagyourtail.unimined.mapping.Namespace
 import xyz.wagyourtail.unimined.util.*
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -1435,49 +1436,80 @@ open class FG3MinecraftTransformer(
         val pattern = Regex("((?:func|field|p)_i?\\d+_(?:\\d{1,2}|[a-zA-Z]{1,2})_?)")
         val inputJar = JarFile(input.toFile())
         val outStream = JarOutputStream(FileOutputStream(output.toFile()))
+        val entries = inputJar.entries().asSequence().toList()
+        val threads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+        if (threads <= 1 || entries.size < 8) {
+            // sequential path
+            for (entry in entries) {
+                writeEntry(outStream, entry.name, remapEntry(inputJar, entry, pattern))
+            }
+        } else {
+            // parallel path: one JarFile per worker thread, results written in entry order
+            val executor = Executors.newFixedThreadPool(threads)
+            try {
+                val threadState = ThreadLocal.withInitial { JarFile(input.toFile()) }
+                val futures =
+                    entries.map { entry ->
+                        executor.submit<Pair<String, ByteArray>> {
+                            val jar = threadState.get()
+                            entry.name to remapEntry(jar, jar.getEntry(entry.name), pattern)
+                        }
+                    }
+                for (future in futures) {
+                    val (name, bytes) = future.get()
+                    writeEntry(outStream, name, bytes)
+                }
+            } finally {
+                executor.shutdown()
+            }
+        }
+        outStream.close()
+    }
 
-        inputJar.entries().iterator().forEach { entry ->
-            val outEntry = ZipEntry(entry.name)
-            outStream.putNextEntry(outEntry)
-            inputJar.getInputStream(entry).use { inputStream ->
-                inputStream.reader(StandardCharsets.UTF_8).readLines().forEach { line ->
-                    val outLine =
-                        line.replace(pattern) { matchResult ->
-                            when {
-                                matchResult.value.startsWith("field") -> {
-                                    if (fieldsMap.contains(matchResult.value)) {
-                                        fieldsMap[matchResult.value]!!.first
-                                    } else {
-                                        matchResult.value
-                                    }
-                                }
-
-                                matchResult.value.startsWith("func") -> {
-                                    if (methodsMap.contains(matchResult.value)) {
-                                        methodsMap[matchResult.value]!!.first
-                                    } else {
-                                        matchResult.value
-                                    }
-                                }
-
-                                matchResult.value.startsWith("p_") -> {
-                                    parameterMap.getOrDefault(
-                                        matchResult.value,
-                                        matchResult.value,
-                                    )
-                                }
-
-                                else -> {
+    /** Remap one jar entry (srg token -> mcp name), shared by both the sequential and parallel paths. */
+    private fun remapEntry(
+        jar: JarFile,
+        entry: ZipEntry,
+        pattern: Regex,
+    ): ByteArray {
+        val out = ByteArrayOutputStream()
+        jar.getInputStream(entry).use { inputStream ->
+            inputStream.reader(StandardCharsets.UTF_8).readLines().forEach { line ->
+                val outLine =
+                    line.replace(pattern) { matchResult ->
+                        when {
+                            matchResult.value.startsWith("field") -> {
+                                if (fieldsMap.contains(matchResult.value)) {
+                                    fieldsMap[matchResult.value]!!.first
+                                } else {
                                     matchResult.value
                                 }
                             }
+
+                            matchResult.value.startsWith("func") -> {
+                                if (methodsMap.contains(matchResult.value)) {
+                                    methodsMap[matchResult.value]!!.first
+                                } else {
+                                    matchResult.value
+                                }
+                            }
+
+                            matchResult.value.startsWith("p_") -> {
+                                parameterMap.getOrDefault(
+                                    matchResult.value,
+                                    matchResult.value,
+                                )
+                            }
+
+                            else -> {
+                                matchResult.value
+                            }
                         }
-                    IOUtils.write(outLine + "\n", outStream, StandardCharsets.UTF_8)
-                }
+                    }
+                out.write((outLine + "\n").toByteArray(StandardCharsets.UTF_8))
             }
-            outStream.closeEntry()
         }
-        outStream.close()
+        return out.toByteArray()
     }
 
     private fun applyAT(
@@ -1622,6 +1654,14 @@ open class FG3MinecraftTransformer(
         val fpFile = cacheDir.resolve("$name.fp")
         if (!project.unimined.forceReload && output.exists() && fpFile.exists() && fpFile.readText() == fp) {
             project.logger.info("Reusing cached step: {}", name)
+            // refresh mtimes so pruning keeps recently-used artifacts (LRU semantics)
+            try {
+                output.toFile().setLastModified(System.currentTimeMillis())
+                fpFile.toFile().setLastModified(System.currentTimeMillis())
+            } catch (e: Exception) {
+                // best-effort, ignore
+            }
+            pruneSourcesCache(cacheDir)
             return output
         }
         project.logger.info("Executing step: {}", name)
@@ -1636,7 +1676,46 @@ open class FG3MinecraftTransformer(
         val fpTmp = cacheDir.resolve("$name.fp.tmp")
         fpTmp.writeText(fp)
         fpTmp.moveTo(fpFile, StandardCopyOption.REPLACE_EXISTING)
+        pruneSourcesCache(cacheDir)
         return output
+    }
+
+    /**
+     * Keep the sources-cache bounded: per label (javadoc / remapped / ...) only the newest
+     * [keepVersions] hash versions are retained (each version is a `.jar` + `.fp` pair, ordered
+     * by last-modified which is refreshed on cache hits). Stale `.tmp` files from interrupted
+     * writes are always removed. Deleting a jar that another project still needs is safe: the
+     * content-addressed lookup simply recomputes it next time.
+     */
+    private fun pruneSourcesCache(
+        cacheDir: Path,
+        keepVersions: Int = 5,
+    ) {
+        try {
+            val all = cacheDir.listDirectoryEntries()
+            for (f in all) {
+                if (f.name.endsWith(".tmp")) {
+                    Files.deleteIfExists(f)
+                }
+            }
+            // label -> (version -> files). version key is e.g. javadoc-ec49... (jar or fp name minus suffix)
+            val byLabel = mutableMapOf<String, MutableList<Pair<Path, Long>>>()
+            for (f in all) {
+                if (f.name.endsWith(".jar") || f.name.endsWith(".fp")) {
+                    val label = f.name.substringBeforeLast('-')
+                    byLabel.getOrPut(label) { mutableListOf() }.add(f to f.toFile().lastModified())
+                }
+            }
+            for ((_, files) in byLabel) {
+                if (files.size <= keepVersions * 2) continue
+                val newest = files.sortedByDescending { it.second }
+                for ((f, _) in newest.drop(keepVersions * 2)) {
+                    Files.deleteIfExists(f)
+                }
+            }
+        } catch (e: Exception) {
+            project.logger.info("Failed to prune sources-cache: {}", e.message)
+        }
     }
 
     data class Modifier(
