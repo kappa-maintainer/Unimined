@@ -2,8 +2,8 @@ package xyz.wagyourtail.unimined.internal.mods
 
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
-import com.google.gson.JsonParser
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import kotlinx.coroutines.runBlocking
 import net.fabricmc.loom.util.kotlin.KotlinClasspathService
 import net.fabricmc.loom.util.kotlin.KotlinRemapperClassloader
@@ -31,8 +31,8 @@ import xyz.wagyourtail.unimined.util.*
 import java.io.*
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.CompletableFuture
 import java.util.jar.JarFile
 import kotlin.io.path.createDirectories
@@ -40,8 +40,11 @@ import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
 import kotlin.io.path.name
 
-class ModRemapProvider(config: Set<Configuration>, val project: Project, val provider: MinecraftConfig) : ModRemapConfig(config) {
-
+class ModRemapProvider(
+    config: Set<Configuration>,
+    val project: Project,
+    val provider: MinecraftConfig,
+) : ModRemapConfig(config) {
     override var namespace: Namespace by FinalizeOnRead(LazyMutable { provider.mcPatcher.prodNamespace })
 
     private var catchAWNs by FinalizeOnRead(false)
@@ -55,14 +58,19 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
         val binary: Path,
         val sources: Path,
         val pom: Path,
-        val moduleMetadata: Path
+        val moduleMetadata: Path,
     )
 
     private val remappedFilesToConfigurations = mutableMapOf<String, Configuration>()
 
     override fun namespace(ns: String) {
         // kotlin reflection is weird
-        val delegate: FinalizeOnRead<Namespace> = ModRemapProvider::class.getField("namespace")!!.getDelegate(this) as FinalizeOnRead<Namespace>
+        val delegate: FinalizeOnRead<Namespace> =
+            ModRemapProvider::class
+                .getField(
+                    "namespace",
+                )!!
+                .getDelegate(this) as FinalizeOnRead<Namespace>
         delegate.setValueIntl(LazyMutable { provider.mappings.checkedNs(ns) })
     }
 
@@ -70,7 +78,13 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
         catchAWNs = true
     }
 
-    override var remapAtToLegacy: Boolean by FinalizeOnRead(LazyMutable { (provider.mcPatcher as? ForgeLikePatcher<*>)?.remapAtToLegacy == true })
+    override var remapAtToLegacy: Boolean by FinalizeOnRead(
+        LazyMutable {
+            (provider.mcPatcher as? ForgeLikePatcher<*>)?.remapAtToLegacy ==
+                true
+        },
+    )
+
     override fun mixinRemap(action: MixinRemapOptions.() -> Unit) {
         mixinRemap = action
     }
@@ -82,86 +96,96 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
         exclude(
             mapOf(
                 "group" to "net.fabricmc",
-                "module" to "fabric-loader"
-            )
+                "module" to "fabric-loader",
+            ),
         )
         exclude(
             mapOf(
                 "group" to "net.legacyfabric",
-                "module" to "fabric-loader"
-            )
+                "module" to "fabric-loader",
+            ),
         )
         exclude(
             mapOf(
                 "group" to "org.quiltmc",
-                "module" to "quilt-loader"
-            )
+                "module" to "quilt-loader",
+            ),
         )
     }
 
-    private val originalDeps = defaultedMapOf<Configuration, Set<Dependency>> {
-        project.logger.info("[Unimined/ModRemapper] Original Deps: $it")
-        for (dep in it.dependencies) {
-            project.logger.info("[Unimined/ModRemapper]    $dep")
-        }
-        it.dependencies.toSet()
-    }
-
-    private val originalDepsFiles = defaultedMapOf<Configuration, Map<ResolvedArtifact, File>> {
-        val detached = project.configurations.detachedConfiguration().apply(this@ModRemapProvider.config)
-        detached.dependencies.addAll(originalDeps[it])
-        val resolved = mutableMapOf<ResolvedArtifact, File>()
-        project.logger.info("[Unimined/ModRemapper] Original Dep Files: $it")
-        for (r in detached.resolvedConfiguration.resolvedArtifacts) {
-            if (r.extension == "pom") continue
-            project.logger.info("[Unimined/ModRemapper]    $r -> ${r.file}")
-            resolved[r] = r.file
+    private val originalDeps =
+        defaultedMapOf<Configuration, Set<Dependency>> {
+            project.logger.info("[Unimined/ModRemapper] Original Deps: $it")
+            for (dep in it.dependencies) {
+                project.logger.info("[Unimined/ModRemapper]    $dep")
+            }
+            it.dependencies.toSet()
         }
 
-        resolved
-    }
+    private val originalDepsFiles =
+        defaultedMapOf<Configuration, Map<ResolvedArtifact, File>> {
+            val detached = project.configurations.detachedConfiguration().apply(this@ModRemapProvider.config)
+            detached.dependencies.addAll(originalDeps[it])
+            val resolved = mutableMapOf<ResolvedArtifact, File>()
+            project.logger.info("[Unimined/ModRemapper] Original Dep Files: $it")
+            for (r in detached.resolvedConfiguration.resolvedArtifacts) {
+                if (r.extension == "pom") continue
+                project.logger.info("[Unimined/ModRemapper]    $r -> ${r.file}")
+                resolved[r] = r.file
+            }
+
+            resolved
+        }
 
     private fun warnAboutMultipleResolvedArtifacts(
         dependencies: Collection<Dependency>,
         artifacts: Collection<ResolvedArtifact>,
-        context: String
+        context: String,
     ) {
-        for ((module, moduleArtifacts) in artifacts.distinctBy { it.file.absolutePath }
+        for ((module, moduleArtifacts) in artifacts
+            .distinctBy { it.file.absolutePath }
             .groupBy { it.moduleVersion.id }) {
             if (moduleArtifacts.size <= 1) continue
 
-            val declarations = dependencies.filterIsInstance<ModuleDependency>().filter { dependency ->
-                dependency.group == module.group && dependency.name == module.name
-            }
-            val declarationDetails = declarations.joinToString("\n") { dependency ->
-                val requestedArtifacts = if (dependency.artifacts.isEmpty()) {
-                    "default variant (no classifier specified)"
-                } else {
-                    dependency.artifacts.joinToString { artifact ->
-                        "classifier=${artifact.classifier ?: "<none>"}, extension=${artifact.extension ?: "jar"}"
-                    }
+            val declarations =
+                dependencies.filterIsInstance<ModuleDependency>().filter { dependency ->
+                    dependency.group == module.group && dependency.name == module.name
                 }
-                "  - $dependency [$requestedArtifacts]"
-            }.ifEmpty { "  - no direct declaration; resolved transitively" }
-            val artifactDetails = moduleArtifacts.joinToString("\n") { artifact ->
-                "  - ${artifact.stringify()} -> ${artifact.file.absolutePath}"
-            }
-            val hasUnclassifiedDeclaration = declarations.any { dependency ->
-                dependency.artifacts.isEmpty() || dependency.artifacts.any { artifact -> artifact.classifier == null }
-            }
-            val risk = if (hasUnclassifiedDeclaration) {
-                "At least one declaration does not specify a classifier. Its Gradle metadata may select " +
-                    "multiple files; remapping all of them can place duplicate mods on the runtime classpath."
-            } else {
-                "No direct unclassified declaration was found; all resolved files will still be remapped " +
-                    "and published together."
-            }
+            val declarationDetails =
+                declarations
+                    .joinToString("\n") { dependency ->
+                        val requestedArtifacts =
+                            if (dependency.artifacts.isEmpty()) {
+                                "default variant (no classifier specified)"
+                            } else {
+                                dependency.artifacts.joinToString { artifact ->
+                                    "classifier=${artifact.classifier ?: "<none>"}, extension=${artifact.extension ?: "jar"}"
+                                }
+                            }
+                        "  - $dependency [$requestedArtifacts]"
+                    }.ifEmpty { "  - no direct declaration; resolved transitively" }
+            val artifactDetails =
+                moduleArtifacts.joinToString("\n") { artifact ->
+                    "  - ${artifact.stringify()} -> ${artifact.file.absolutePath}"
+                }
+            val hasUnclassifiedDeclaration =
+                declarations.any { dependency ->
+                    dependency.artifacts.isEmpty() || dependency.artifacts.any { artifact -> artifact.classifier == null }
+                }
+            val risk =
+                if (hasUnclassifiedDeclaration) {
+                    "At least one declaration does not specify a classifier. Its Gradle metadata may select " +
+                        "multiple files; remapping all of them can place duplicate mods on the runtime classpath."
+                } else {
+                    "No direct unclassified declaration was found; all resolved files will still be remapped " +
+                        "and published together."
+                }
             project.logger.warn(
                 "[Unimined/ModRemapper] Module $module resolved to ${moduleArtifacts.size} artifacts in $context. " +
                     "All artifacts will be remapped and published together.\n" +
                     "Declared dependencies:\n$declarationDetails\n" +
                     "Resolved artifacts:\n$artifactDetails\n" +
-                    risk
+                    risk,
             )
         }
     }
@@ -176,10 +200,12 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
         val extension = artifact.extension ?: "jar"
         val classifier = artifact.classifier?.let { "-$it" } ?: ""
         val fileName = "$module-$version$classifier.$extension"
-        val directory = (provider.mods as ModsProvider).modTransformFolder()
-            .resolve(group.replace('.', File.separatorChar))
-            .resolve(module)
-            .resolve(version)
+        val directory =
+            (provider.mods as ModsProvider)
+                .modTransformFolder()
+                .resolve(group.replace('.', File.separatorChar))
+                .resolve(module)
+                .resolve(version)
         return RemappedCoordinates(
             group,
             module,
@@ -187,98 +213,116 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             extension,
             directory,
             directory.resolve(fileName),
+            // Sources must be published under the plain (classifier-less) name: IDEA's Legacy
+            // auxiliary resolver queries SourcesArtifact by module id (no classifier), so ivy
+            // resolution looks up "<module>-<version>-sources.jar" regardless of the binary's
+            // classifier (jei-4.33.0-dev.jar still pairs with jei-4.33.0-sources.jar).
             directory.resolve("$module-$version-sources.jar"),
             directory.resolve("$module-$version.pom"),
-            directory.resolve("$module-$version.module")
+            directory.resolve("$module-$version.module"),
         )
     }
 
-    private val originalDepsSourceFiles = defaultedMapOf<Configuration, Map<ResolvedArtifact, File?>> {
-        val resolved = mutableMapOf<ResolvedArtifact, File?>()
-        for (artifacts in originalDepsFiles[it].keys.groupBy { artifact -> artifact.moduleVersion.id }.values) {
-            val artifact = artifacts.first()
-            if (artifact.moduleVersion.id.group == "curse.maven") {
-                artifacts.forEach { resolved[it] = null }
-                continue
-            }
-            // Sources are always resolved from the unclassified module coordinates.
-            // Multiple classified binaries in the same module therefore share one
-            // source resolution and one published sources artifact.
-            val sourceDep = project.dependencies.create(mapOf(
-                "group" to artifact.moduleVersion.id.group,
-                "name" to artifact.name,
-                "version" to artifact.moduleVersion.id.version,
-                "classifier" to "sources",
-                "ext" to "jar"
-            )).also { dependency ->
-                (dependency as? ExternalModuleDependency)?.isTransitive = false
-            }
-            val sourceFile = try {
-                val detached = project.configurations.detachedConfiguration()
-                detached.dependencies.add(sourceDep)
-                detached.resolvedConfiguration.resolvedArtifacts
-                    .firstOrNull { a -> a.extension != "pom" }
-                    ?.file
-                    ?.also { file ->
-                        project.logger.info("[Unimined/ModRemapper]    Source: $sourceDep -> $file")
+    private val originalDepsSourceFiles =
+        defaultedMapOf<Configuration, Map<ResolvedArtifact, File?>> {
+            val resolved = mutableMapOf<ResolvedArtifact, File?>()
+            for (artifacts in originalDepsFiles[it].keys.groupBy { artifact -> artifact.moduleVersion.id }.values) {
+                val artifact = artifacts.first()
+                if (artifact.moduleVersion.id.group == "curse.maven") {
+                    artifacts.forEach { resolved[it] = null }
+                    continue
+                }
+                // Sources are always resolved from the unclassified module coordinates.
+                // Multiple classified binaries in the same module therefore share one
+                // source resolution and one published sources artifact.
+                val sourceDep =
+                    project.dependencies
+                        .create(
+                            mapOf(
+                                "group" to artifact.moduleVersion.id.group,
+                                "name" to artifact.name,
+                                "version" to artifact.moduleVersion.id.version,
+                                "classifier" to "sources",
+                                "ext" to "jar",
+                            ),
+                        ).also { dependency ->
+                            (dependency as? ExternalModuleDependency)?.isTransitive = false
+                        }
+                val sourceFile =
+                    try {
+                        val detached = project.configurations.detachedConfiguration()
+                        detached.dependencies.add(sourceDep)
+                        detached.resolvedConfiguration.resolvedArtifacts
+                            .firstOrNull { a -> a.extension != "pom" }
+                            ?.file
+                            ?.also { file ->
+                                project.logger.info("[Unimined/ModRemapper]    Source: $sourceDep -> $file")
+                            }
+                    } catch (e: Exception) {
+                        project.logger.info("[Unimined/ModRemapper]    No source artifact for ${artifact.stringify()}: ${e.message}")
+                        null
                     }
-            } catch (e: Exception) {
-                project.logger.info("[Unimined/ModRemapper]    No source artifact for ${artifact.stringify()}: ${e.message}")
-                null
+                artifacts.forEach { resolved[it] = sourceFile }
             }
-            artifacts.forEach { resolved[it] = sourceFile }
+            resolved
         }
-        resolved
-    }
 
-    fun getConfigForFile(file: File): Configuration? = runBlocking {
-        val configuration = remappedFilesToConfigurations[file.absoluteFile.normalize().path]
-        configuration?.let {
-            project.logger.debug("[Unimined/ModRemapper] {} is an output of {}", file, it)
-            return@runBlocking it
+    fun getConfigForFile(file: File): Configuration? =
+        runBlocking {
+            val configuration = remappedFilesToConfigurations[file.absoluteFile.normalize().path]
+            configuration?.let {
+                project.logger.debug("[Unimined/ModRemapper] {} is an output of {}", file, it)
+                return@runBlocking it
+            }
+            null
         }
-        null
-    }
 
     private fun constructRemapper(
         fromNs: Namespace,
         toNs: Namespace,
-        mc: Path
-    ): CompletableFuture<Pair<TinyRemapper, MixinRemapExtension>> = runBlocking {
-        val remapperB = TinyRemapper.newRemapper()
-            .withMappings(
-                provider.mappings.getTRMappings(
-                    fromNs to toNs,
-                    false
+        mc: Path,
+    ): CompletableFuture<Pair<TinyRemapper, MixinRemapExtension>> =
+        runBlocking {
+            val remapperB =
+                TinyRemapper
+                    .newRemapper()
+                    .withMappings(
+                        provider.mappings.getTRMappings(
+                            fromNs to toNs,
+                            false,
+                        ),
+                    ).skipLocalVariableMapping(true)
+                    .propagateUnmappedSuper(provider.mcPatcher !is ForgeLikePatcher<*>)
+                    .ignoreConflicts(true)
+                    .threads(Runtime.getRuntime().availableProcessors())
+                    .extraRemapper(
+                        provider.mappings.getExtraRemapper(
+                            fromNs to toNs,
+                        ),
+                    )
+            val classpath = KotlinClasspathService.getOrCreateIfRequired(project)
+            if (classpath != null) {
+                remapperB.extension(KotlinRemapperClassloader.create(classpath).tinyRemapperExtension)
+            }
+            val mixinExtension =
+                MixinRemapExtension(
+                    project.logger,
+                    allowImplicitWildcards = true,
                 )
-            )
-            .skipLocalVariableMapping(true)
-            .propagateUnmappedSuper(provider.mcPatcher !is ForgeLikePatcher<*>)
-            .ignoreConflicts(true)
-            .threads(Runtime.getRuntime().availableProcessors())
-            .extraRemapper(provider.mappings.getExtraRemapper(
-                fromNs to toNs
-            ))
-        val classpath = KotlinClasspathService.getOrCreateIfRequired(project)
-        if (classpath != null) {
-            remapperB.extension(KotlinRemapperClassloader.create(classpath).tinyRemapperExtension)
-        }
-        val mixinExtension = MixinRemapExtension(
-                project.logger,
-                allowImplicitWildcards = true
-            )
-        mixinExtension.enableBaseMixin()
-        mixinRemap(mixinExtension)
-        remapperB.extension(mixinExtension)
+            mixinExtension.enableBaseMixin()
+            mixinRemap(mixinExtension)
+            remapperB.extension(mixinExtension)
 
-        tinyRemapSettings(remapperB)
-        val remapper = remapperB.build()
-        val future = mixinExtension.readClassPath(remapper,
-                *(provider.minecraftLibraries.files.map { it.toPath() } + listOf(mc))
-                    .toTypedArray()
-            )
-        future.thenApply { remapper to mixinExtension }
-    }
+            tinyRemapSettings(remapperB)
+            val remapper = remapperB.build()
+            val future =
+                mixinExtension.readClassPath(
+                    remapper,
+                    *(provider.minecraftLibraries.files.map { it.toPath() } + listOf(mc))
+                        .toTypedArray(),
+                )
+            future.thenApply { remapper to mixinExtension }
+        }
 
     override fun remapper(remapperBuilder: TinyRemapper.Builder.() -> Unit) {
         tinyRemapSettings = remapperBuilder
@@ -286,7 +330,7 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
 
     fun doRemap(
         devNamespace: Namespace = provider.mappings.devNamespace,
-        targetConfigurations: Map<Configuration, Configuration> = defaultedMapOf { it }
+        targetConfigurations: Map<Configuration, Configuration> = defaultedMapOf { it },
     ) = runBlocking {
         if (namespace != devNamespace) {
             project.logger.lifecycle("[Unimined/ModRemapper] Remapping mods from $namespace to $devNamespace")
@@ -308,28 +352,42 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             warnAboutMultipleResolvedArtifacts(
                 configurations.flatMap { configuration -> originalDeps[configuration] },
                 mods.keys,
-                "the configured remap inputs"
+                "the configured remap inputs",
             )
             val mc = provider.getMinecraft(namespace)
             val forceReload = project.unimined.forceReload
-            val targets = mods.mapValues { mod ->
-                val coordinates = coordinatesFor(mod.key)
-                coordinates.directory.createDirectories()
-                for (configuration in configurations) {
-                    if (originalDepsFiles[configuration].containsKey(mod.key)) {
-                        remappedFilesToConfigurations[coordinates.binary.toFile().absoluteFile.normalize().path] = configuration
+            val targets =
+                mods.mapValues { mod ->
+                    val coordinates = coordinatesFor(mod.key)
+                    coordinates.directory.createDirectories()
+                    for (configuration in configurations) {
+                        if (originalDepsFiles[configuration].containsKey(mod.key)) {
+                            remappedFilesToConfigurations[
+                                coordinates.binary
+                                    .toFile()
+                                    .absoluteFile
+                                    .normalize()
+                                    .path,
+                            ] = configuration
+                        }
                     }
+                    mod.value to coordinates.binary.let { it to (it.exists() && !forceReload) }
                 }
-                mod.value to coordinates.binary.let { it to (it.exists() && !forceReload) }
-            }
             project.logger.info("[Unimined/ModRemapper] Remapping Mods: ")
             if (targets.values.none { !it.second.second }) {
                 project.logger.info("[Unimined/ModRemapper]    Skipping remap as all mods are already remapped")
                 mods.clear()
-                mods.putAll(targets.mapValues { it.value.second.first.toFile() })
+                mods.putAll(
+                    targets.mapValues {
+                        it.value.second.first
+                            .toFile()
+                    },
+                )
             } else {
                 for (mod in targets) {
-                    project.logger.info("[Unimined/ModRemapper]  ${if (mod.value.second.second) "skipping" else "        "} ${mod.value.first} -> ${mod.value.second.first}")
+                    project.logger.info(
+                        "[Unimined/ModRemapper]  ${if (mod.value.second.second) "skipping" else "        "} ${mod.value.first} -> ${mod.value.second.first}",
+                    )
                 }
                 val remapper = constructRemapper(namespace, devNamespace, mc)
                 val tags = preRemapInternal(remapper, targets)
@@ -338,11 +396,11 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
                     remapInternal(
                         remapper.join(),
                         tags.join().nonNullValues(),
-                        devNamespace
-                    )
+                        devNamespace,
+                    ),
                 )
                 mods.putAll(
-                    tags.join().filterValues { it == null }.mapValues { targets[it.key]!!.second.first.toFile() }
+                    tags.join().filterValues { it == null }.mapValues { targets[it.key]!!.second.first.toFile() },
                 )
             }
 
@@ -354,6 +412,12 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
                 if (configurations.none { originalDepsSourceFiles[it][artifact]?.exists() == true }) {
                     coordinates.sources.deleteIfExists()
                 }
+                // Ivy-repo projects must not leave a stale .module behind: it would make
+                // IDEA's Legacy auxiliary resolver echo the queried identifier class and
+                // silently drop the sources (see writeMetadata).
+                if (!publishModuleMetadata) {
+                    coordinates.moduleMetadata.deleteIfExists()
+                }
             }
 
             // Copy source jars alongside remapped binary jars and publish metadata for
@@ -361,8 +425,10 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             // the source code is already in MCP names, while AT files are documentation
             // resources in an IDE source attachment rather than runtime inputs.
             for (c in configurations) {
-                for (entries in originalDepsSourceFiles[c].entries
-                    .groupBy { entry -> entry.key.moduleVersion.id }.values) {
+                for (entries in originalDepsSourceFiles[c]
+                    .entries
+                    .groupBy { entry -> entry.key.moduleVersion.id }
+                    .values) {
                     val entry = entries.firstOrNull { candidate -> candidate.value?.exists() == true } ?: continue
                     project.logger.info("[Unimined/ModRemapper] Copying source jar for ${entry.key.stringify()}")
                     copySourceJar(entry.key, entry.value!!)
@@ -377,16 +443,22 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
                 val outConf = targetConfigurations[c]
                 project.logger.info("[Unimined/ModRemapper] Supplying remapped mods to ${c.name}")
                 outConf!!.dependencies.clear()
-                for (artifact in originalDepsFiles[c].keys
+                for (artifact in originalDepsFiles[c]
+                    .keys
                     .filter { artifact -> artifact.extension != "pom" }
                     .distinctBy { artifact -> artifact.moduleVersion.id }) {
                     val coordinates = coordinatesFor(artifact)
+                    // the remapped coordinates must carry the artifact classifier: the synthetic
+                    // modsRemap repo is ivy artifact-only (no metadata), so a bare coordinate
+                    // cannot map back to a classified binary like jei-4.33.0-dev.jar
+                    val classifierSuffix = artifact.classifier?.let { ":$it" } ?: ""
                     outConf.dependencies.add(
-                        project.dependencies.create(
-                            "${coordinates.group}:${coordinates.module}:${coordinates.version}"
-                        ).also { dependency ->
-                            (dependency as? ExternalModuleDependency)?.isTransitive = false
-                        }
+                        project.dependencies
+                            .create(
+                                "${coordinates.group}:${coordinates.module}:${coordinates.version}$classifierSuffix",
+                            ).also { dependency ->
+                                (dependency as? ExternalModuleDependency)?.isTransitive = false
+                            },
                     )
                 }
             }
@@ -403,7 +475,7 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
 
     private fun preRemapInternal(
         remapper: CompletableFuture<Pair<TinyRemapper, MixinRemapExtension>>,
-        deps: Map<ResolvedArtifact, Pair<File, Pair<Path, Boolean>>>
+        deps: Map<ResolvedArtifact, Pair<File, Pair<Path, Boolean>>>,
     ): CompletableFuture<Map<ResolvedArtifact, Pair<InputTag, Pair<File, Path>>?>> {
         val output = mutableMapOf<ResolvedArtifact, Pair<InputTag, Pair<File, Path>>?>()
         var future = remapper
@@ -412,31 +484,35 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             val file = data.first
             val target = data.second.first
             val needsRemap = !data.second.second
-            project.logger.info("[Unimined/ModRemapper] remap ${needsRemap}; $file -> $target")
+            project.logger.info("[Unimined/ModRemapper] remap $needsRemap; $file -> $target")
             if (file.isDirectory) {
                 throw InvalidUserDataException("Cannot remap directory ${file.absolutePath}")
             } else {
-                futures += future.thenCompose {
-                    if (needsRemap) {
-                        val tag = it.first.createInputTag()
-                        output[artifact] = tag to (file to target)
-                        it.second.readInput(it.first, tag, file.toPath())
-                    } else {
-                        output[artifact] = null
-                        it.second.readClassPath(it.first, file.toPath())
+                futures +=
+                    future.thenCompose {
+                        if (needsRemap) {
+                            val tag = it.first.createInputTag()
+                            output[artifact] = tag to (file to target)
+                            it.second.readInput(it.first, tag, file.toPath())
+                        } else {
+                            output[artifact] = null
+                            it.second.readClassPath(it.first, file.toPath())
+                        }
                     }
-                }
             }
         }
         return CompletableFuture.allOf(*futures.toTypedArray()).thenApply { output }
     }
 
-    private fun ResolvedArtifact.stringify() = "${this.moduleVersion.id.group}:${this.name}:${this.moduleVersion.id.version}${this.classifier?.let { ":$it" } ?: ""}${this.extension?.let { "@$it" } ?: ""}"
+    private fun ResolvedArtifact.stringify() =
+        "${this.moduleVersion.id.group}:${this.name}:${this.moduleVersion.id.version}${this.classifier?.let {
+            ":$it"
+        } ?: ""}${this.extension?.let { "@$it" } ?: ""}"
 
     private fun remapInternal(
         remapper: Pair<TinyRemapper, MixinRemapExtension>,
         deps: Map<ResolvedArtifact, Pair<InputTag, Pair<File, Path>>>,
-        targetNs: Namespace
+        targetNs: Namespace,
     ): Map<ResolvedArtifact, File> {
         val output = mutableMapOf<ResolvedArtifact, File>()
         project.logger.info("[Unimined/ModRemapper] Remapping mods to $targetNs")
@@ -459,11 +535,16 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
         remapper: Pair<TinyRemapper, MixinRemapExtension>,
         dep: ResolvedArtifact,
         input: Pair<InputTag, Pair<File, Path>>,
-        toNs: Namespace
+        toNs: Namespace,
     ) = runBlocking {
         val inpFile = input.second.first
         val targetFile = input.second.second
-        val manifest = JarFile(inpFile).use { it.manifest }?.mainAttributes?.getValue("FMLAT")?.split(" ") ?: emptyList()
+        val manifest =
+            JarFile(inpFile)
+                .use { it.manifest }
+                ?.mainAttributes
+                ?.getValue("FMLAT")
+                ?.split(" ") ?: emptyList()
         project.logger.info("[Unimined/ModRemapper] Remapping mod from $inpFile -> $targetFile with mapping target $toNs")
         try {
             OutputConsumerPath.Builder(targetFile).build().use {
@@ -475,11 +556,18 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
                             AccessWidenerApplier.nsName(provider.mappings, namespace),
                             AccessWidenerApplier.nsName(provider.mappings, toNs),
                             catchAWNs,
-                            project.logger
+                            project.logger,
                         ),
                         innerJarStripper,
-                        AccessTransformerApplier.AtRemapper(project.logger, namespace, toNs, remapAtToLegacy, manifest, provider.mappings.resolve())
-                    ) + NonClassCopyMode.FIX_META_INF.remappers
+                        AccessTransformerApplier.AtRemapper(
+                            project.logger,
+                            namespace,
+                            toNs,
+                            remapAtToLegacy,
+                            manifest,
+                            provider.mappings.resolve(),
+                        ),
+                    ) + NonClassCopyMode.FIX_META_INF.remappers,
                 )
                 remapper.first.apply(it, input.first)
             }
@@ -495,7 +583,7 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
 
     private fun copySourceJar(
         artifact: ResolvedArtifact,
-        sourceFile: File
+        sourceFile: File,
     ) {
         val targetSourceFile = coordinatesFor(artifact).sources
         targetSourceFile.parent.createDirectories()
@@ -517,11 +605,13 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
     private fun writeMetadata(moduleArtifacts: List<RemappedCoordinates>) {
         require(moduleArtifacts.isNotEmpty())
         val coordinates = moduleArtifacts.first()
-        require(moduleArtifacts.all { artifact ->
-            artifact.group == coordinates.group &&
-                artifact.module == coordinates.module &&
-                artifact.version == coordinates.version
-        })
+        require(
+            moduleArtifacts.all { artifact ->
+                artifact.group == coordinates.group &&
+                    artifact.module == coordinates.module &&
+                    artifact.version == coordinates.version
+            },
+        )
         coordinates.directory.createDirectories()
 
         // Synthetic modules intentionally have no transitive dependencies. The remap
@@ -531,20 +621,21 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
         val sourceExists = coordinates.sources.exists()
         val sourceName = coordinates.sources.fileName.toString()
 
-        val pom = buildString {
-            append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-            append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\" ")
-            append("xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ")
-            append("xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 ")
-            append("https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n")
-            append("  <!-- do_not_remove: published-with-gradle-metadata -->\n")
-            append("  <modelVersion>4.0.0</modelVersion>\n")
-            append("  <groupId>${xmlEscape(coordinates.group)}</groupId>\n")
-            append("  <artifactId>${xmlEscape(coordinates.module)}</artifactId>\n")
-            append("  <version>${xmlEscape(coordinates.version)}</version>\n")
-            append("  <packaging>jar</packaging>\n")
-            append("</project>\n")
-        }
+        val pom =
+            buildString {
+                append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\" ")
+                append("xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ")
+                append("xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 ")
+                append("https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n")
+                append("  <!-- do_not_remove: published-with-gradle-metadata -->\n")
+                append("  <modelVersion>4.0.0</modelVersion>\n")
+                append("  <groupId>${xmlEscape(coordinates.group)}</groupId>\n")
+                append("  <artifactId>${xmlEscape(coordinates.module)}</artifactId>\n")
+                append("  <version>${xmlEscape(coordinates.version)}</version>\n")
+                append("  <packaging>jar</packaging>\n")
+                append("</project>\n")
+            }
         coordinates.pom.toFile().writeText(pom)
 
         fun variant(
@@ -552,87 +643,145 @@ class ModRemapProvider(config: Set<Configuration>, val project: Project, val pro
             category: String,
             usage: String,
             docType: String?,
-            fileNames: List<String>
+            fileNames: List<String>,
         ): JsonObject {
-            val attributes = JsonObject().apply {
-                addProperty("org.gradle.category", category)
-                addProperty("org.gradle.dependency.bundling", "external")
-                addProperty("org.gradle.usage", usage)
-                if (category == "library") addProperty("org.gradle.libraryelements", "jar")
-                if (docType != null) addProperty("org.gradle.docstype", docType)
-            }
+            val attributes =
+                JsonObject().apply {
+                    addProperty("org.gradle.category", category)
+                    addProperty("org.gradle.dependency.bundling", "external")
+                    addProperty("org.gradle.usage", usage)
+                    if (category == "library") addProperty("org.gradle.libraryelements", "jar")
+                    if (docType != null) addProperty("org.gradle.docstype", docType)
+                }
             return JsonObject().apply {
                 addProperty("name", name)
                 add("attributes", attributes)
-                add("files", JsonArray().apply {
-                    for (fileName in fileNames) {
-                        add(JsonObject().apply {
-                            addProperty("name", fileName)
-                            addProperty("url", fileName)
-                        })
-                    }
-                })
+                add(
+                    "files",
+                    JsonArray().apply {
+                        for (fileName in fileNames) {
+                            add(
+                                JsonObject().apply {
+                                    addProperty("name", fileName)
+                                    addProperty("url", fileName)
+                                },
+                            )
+                        }
+                    },
+                )
             }
         }
 
-        val variants = JsonArray().apply {
-            add(variant("apiElements", "library", "java-api", null, binaryNames))
-            add(variant("runtimeElements", "library", "java-runtime", null, binaryNames))
-            if (sourceExists) {
-                add(variant("sourcesElements", "documentation", "java-runtime", "sources", listOf(sourceName)))
+        val variants =
+            JsonArray().apply {
+                add(variant("apiElements", "library", "java-api", null, binaryNames))
+                add(variant("runtimeElements", "library", "java-runtime", null, binaryNames))
+                if (sourceExists) {
+                    add(variant("sourcesElements", "documentation", "java-runtime", "sources", listOf(sourceName)))
+                }
             }
+        val moduleMetadata =
+            if (publishModuleMetadata) {
+                JsonObject().apply {
+                    addProperty("formatVersion", "1.1")
+                    add(
+                        "component",
+                        JsonObject().apply {
+                            addProperty("group", coordinates.group)
+                            addProperty("module", coordinates.module)
+                            addProperty("version", coordinates.version)
+                            // match Gradle-generated .module files (e.g. from `java-library` publish):
+                            // a component-level status is expected by consumers reading the metadata
+                            add(
+                                "attributes",
+                                JsonObject().apply {
+                                    addProperty("org.gradle.status", "release")
+                                },
+                            )
+                        },
+                    )
+                    add(
+                        "createdBy",
+                        JsonObject().apply {
+                            add(
+                                "gradle",
+                                JsonObject().apply {
+                                    addProperty("version", "9.6.1")
+                                },
+                            )
+                        },
+                    )
+                    add("variants", variants)
+                }
+            } else {
+                // No Gradle Module Metadata for ivy-repo projects: IDEA's Legacy auxiliary
+                // artifact resolver queries sources with its own ModuleComponentIdentifier;
+                // Gradle echoes that identifier class back as the component id for modules
+                // resolved via .module metadata, and the echoed key has a different hashCode
+                // than the artifact's Gradle-native identifier, so the AuxiliaryConfigurationArtifacts
+                // map lookup misses and sources are silently dropped (the classes then open with
+                // the built-in decompiler). POM-only resolution returns Gradle's native id and
+                // synthesizes the maven `-sources` classifier artifact, so sources attach again.
+                coordinates.moduleMetadata.deleteIfExists()
+                null
+            }
+        if (moduleMetadata != null) {
+            coordinates.moduleMetadata.toFile().writeText(
+                GsonBuilder().setPrettyPrinting().create().toJson(moduleMetadata),
+            )
         }
-        val moduleMetadata = JsonObject().apply {
-            addProperty("formatVersion", "1.1")
-            add("component", JsonObject().apply {
-                addProperty("group", coordinates.group)
-                addProperty("module", coordinates.module)
-                addProperty("version", coordinates.version)
-            })
-            add("variants", variants)
-        }
-        coordinates.moduleMetadata.toFile().writeText(
-            GsonBuilder().setPrettyPrinting().create().toJson(moduleMetadata)
-        )
     }
 
-    private fun xmlEscape(value: String): String = value
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&apos;")
+    /**
+     * Gradle Module Metadata for the synthetic remapped components is only useful for the
+     * non-ivy auxiliary resolver path. Any ivy repository in the project makes IDEA pick its
+     * Legacy auxiliary artifact resolver, where publishing a .module breaks source attach
+     * (see writeMetadata).
+     */
+    private val publishModuleMetadata: Boolean by lazy {
+        project.repositories.none { it is org.gradle.api.artifacts.repositories.IvyArtifactRepository }
+    }
 
-    private val innerJarStripper: OutputConsumerPath.ResourceRemapper = object : OutputConsumerPath.ResourceRemapper {
-        override fun canTransform(remapper: TinyRemapper, relativePath: Path): Boolean {
-            return relativePath.name.contains(".mod.json")
-        }
+    private fun xmlEscape(value: String): String =
+        value
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
 
-        override fun transform(
-            destinationDirectory: Path,
-            relativePath: Path,
-            input: InputStream,
-            remapper: TinyRemapper
-        ) {
-            val output = destinationDirectory.resolve(relativePath)
-            output.parent.createDirectories()
-            BufferedReader(InputStreamReader(input)).use { reader ->
-                val json = JsonParser.parseReader(reader)
-                json.asJsonObject.remove("jars")
-                BufferedWriter(
-                    OutputStreamWriter(
-                        BufferedOutputStream(
-                            Files.newOutputStream(
-                                output,
-                                StandardOpenOption.CREATE,
-                                StandardOpenOption.TRUNCATE_EXISTING
-                            )
-                        )
-                    )
-                ).use { writer ->
-                    GsonBuilder().setPrettyPrinting().create().toJson(json, writer)
+    private val innerJarStripper: OutputConsumerPath.ResourceRemapper =
+        object : OutputConsumerPath.ResourceRemapper {
+            override fun canTransform(
+                remapper: TinyRemapper,
+                relativePath: Path,
+            ): Boolean = relativePath.name.contains(".mod.json")
+
+            override fun transform(
+                destinationDirectory: Path,
+                relativePath: Path,
+                input: InputStream,
+                remapper: TinyRemapper,
+            ) {
+                val output = destinationDirectory.resolve(relativePath)
+                output.parent.createDirectories()
+                BufferedReader(InputStreamReader(input)).use { reader ->
+                    val json = JsonParser.parseReader(reader)
+                    json.asJsonObject.remove("jars")
+                    BufferedWriter(
+                        OutputStreamWriter(
+                            BufferedOutputStream(
+                                Files.newOutputStream(
+                                    output,
+                                    StandardOpenOption.CREATE,
+                                    StandardOpenOption.TRUNCATE_EXISTING,
+                                ),
+                            ),
+                        ),
+                    ).use { writer ->
+                        GsonBuilder().setPrettyPrinting().create().toJson(json, writer)
+                    }
                 }
             }
         }
-    }
 }

@@ -48,8 +48,10 @@ import xyz.wagyourtail.unimined.internal.minecraft.patch.bukkit.PaperMinecraftTr
 import xyz.wagyourtail.unimined.internal.minecraft.patch.bukkit.SpigotMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.fabric.*
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.CleanroomMinecraftTransformer
+import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.ForgeLikeMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.MinecraftForgeMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.NeoForgedMinecraftTransformer
+import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.sha256Hex
 import xyz.wagyourtail.unimined.internal.minecraft.patch.jarmod.JarModAgentMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.liteloader.LiteLoaderMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.merged.MergedMinecraftTransformer
@@ -78,16 +80,23 @@ import java.nio.file.StandardOpenOption
 import java.util.*
 import kotlin.io.path.*
 
-open class MinecraftProvider(project: Project, sourceSet: SourceSet) : MinecraftConfig(project, sourceSet) {
-    override var canCombine: Boolean by FinalizeOnRead(LazyMutable {
-        minecraftData.mcVersionCompare(version, "1.3") > -1
-    })
+open class MinecraftProvider(
+    project: Project,
+    sourceSet: SourceSet,
+) : MinecraftConfig(project, sourceSet) {
+    override var canCombine: Boolean by FinalizeOnRead(
+        LazyMutable {
+            minecraftData.mcVersionCompare(version, "1.3") > -1
+        },
+    )
 
     override val minecraftData = MinecraftDownloader(project, this)
 
-    override val obfuscated: Boolean by FinalizeOnRead(LazyMutable {
-        minecraftData.mcVersionCompare("1.21.11", minecraftData.version) >= 0
-    })
+    override val obfuscated: Boolean by FinalizeOnRead(
+        LazyMutable {
+            minecraftData.mcVersionCompare("1.21.11", minecraftData.version) >= 0
+        },
+    )
 
     /**
      * Whether to apply fixes to inner classes
@@ -121,19 +130,29 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
     var applied: Boolean by FinalizeOnWrite(false)
         private set
 
-    override val minecraft: Configuration = project.configurations.maybeCreate("minecraft".withSourceSet(sourceSet)).also {
-        sourceSet.compileClasspath += it
-        sourceSet.runtimeClasspath += it
-    }
+    override val minecraft: Configuration =
+        project.configurations.maybeCreate("minecraft".withSourceSet(sourceSet)).also {
+            sourceSet.compileClasspath += it
+            sourceSet.runtimeClasspath += it
+        }
 
-    override val minecraftLibraries: Configuration = project.configurations.maybeCreate("minecraftLibraries".withSourceSet(sourceSet)).also {
-        sourceSet.compileClasspath += it
-        sourceSet.runtimeClasspath += it
-        it.setTransitive(false)
-    }
+    override val minecraftLibraries: Configuration =
+        project.configurations.maybeCreate("minecraftLibraries".withSourceSet(sourceSet)).also {
+            sourceSet.compileClasspath += it
+            sourceSet.runtimeClasspath += it
+            it.setTransitive(false)
+        }
 
-    override fun from(project: Project, sourceSet: SourceSet) {
-        val delegate = MinecraftProvider::class.getField("mcPatcher")!!.getDelegate(this) as FinalizeOnRead<FinalizeOnWrite<MinecraftPatcher>>
+    override fun from(
+        project: Project,
+        sourceSet: SourceSet,
+    ) {
+        val delegate =
+            MinecraftProvider::class
+                .getField(
+                    "mcPatcher",
+                )!!
+                .getDelegate(this) as FinalizeOnRead<FinalizeOnWrite<MinecraftPatcher>>
         if (delegate.finalized || (delegate.value as FinalizeOnWrite<MinecraftPatcher>).finalized) {
             throw IllegalStateException("mcPatcher is already finalized before from() call, from should really be called at the top...")
         }
@@ -148,8 +167,13 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         (delegate.value as FinalizeOnWrite<MinecraftPatcher>).finalized = false
     }
 
-    override fun combineWith(project: Project, sourceSet: SourceSet) {
-        project.logger.lifecycle("[Unimined/Minecraft ${project.path}:${this.sourceSet.name}] Combining with ${project.path}:${sourceSet.name}")
+    override fun combineWith(
+        project: Project,
+        sourceSet: SourceSet,
+    ) {
+        project.logger.lifecycle(
+            "[Unimined/Minecraft ${project.path}:${this.sourceSet.name}] Combining with ${project.path}:${sourceSet.name}",
+        )
         if (combinedWithList.add(project to sourceSet)) {
             if (project.uniminedMaybe != null && project.unimined.minecrafts.contains(sourceSet)) {
                 from(project, sourceSet)
@@ -160,7 +184,11 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         // remove unimined deps
     }
 
-    override fun remap(task: Task, name: String, action: RemapJarTask.() -> Unit): TaskProvider<RemapJarTask> {
+    override fun remap(
+        task: Task,
+        name: String,
+        action: RemapJarTask.() -> Unit,
+    ): TaskProvider<RemapJarTask> {
         val remapTask = project.tasks.register(name, RemapJarTaskImpl::class.java, this)
         remapTask.configure {
             it.dependsOn(task)
@@ -173,7 +201,11 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         return remapTask as TaskProvider<RemapJarTask>
     }
 
-    override fun remapSources(task: Task, name: String, action: RemapSourcesJarTask.() -> Unit): TaskProvider<RemapSourcesJarTask> {
+    override fun remapSources(
+        task: Task,
+        name: String,
+        action: RemapSourcesJarTask.() -> Unit,
+    ): TaskProvider<RemapSourcesJarTask> {
         val remapTask = project.tasks.register(name, RemapSourcesJarTaskImpl::class.java, this)
         remapTask.configure {
             it.dependsOn(task)
@@ -198,22 +230,25 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         }
     }
 
-    protected open val minecraftFiles: Map<Namespace, MinecraftJar> = defaultedMapOf {
-        project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] Providing minecraft files for $it")
-        val mc = if (side == EnvType.JOINED) {
-            val client = minecraftData.minecraftClient
-            if (!client.path.exists()) throw IOException("minecraft path $client does not exist")
-            val server = minecraftData.minecraftServer
-            (mcPatcher as AbstractMinecraftTransformer).merge(client, server)
-        } else {
-            minecraftData.getMinecraft(side)
+    protected open val minecraftFiles: Map<Namespace, MinecraftJar> =
+        defaultedMapOf {
+            project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] Providing minecraft files for $it")
+            val mc =
+                if (side == EnvType.JOINED) {
+                    val client = minecraftData.minecraftClient
+                    if (!client.path.exists()) throw IOException("minecraft path $client does not exist")
+                    val server = minecraftData.minecraftServer
+                    (mcPatcher as AbstractMinecraftTransformer).merge(client, server)
+                } else {
+                    minecraftData.getMinecraft(side)
+                }
+            val path =
+                (mcPatcher as AbstractMinecraftTransformer).afterRemap(
+                    minecraftRemapper.provide((mcPatcher as AbstractMinecraftTransformer).transform(mc), it),
+                )
+            if (!path.path.exists()) throw IOException("minecraft path $path does not exist")
+            path
         }
-        val path = (mcPatcher as AbstractMinecraftTransformer).afterRemap(
-            minecraftRemapper.provide((mcPatcher as AbstractMinecraftTransformer).transform(mc), it)
-        )
-        if (!path.path.exists()) throw IOException("minecraft path $path does not exist")
-        path
-    }
 
     override fun getMinecraft(namespace: Namespace): Path {
         synchronized(this) {
@@ -227,59 +262,66 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
     }
 
     override fun merged(action: MergedPatcher.() -> Unit) {
-        mcPatcher = MergedMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as MergedPatcher)
+        mcPatcher =
+            MergedMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as MergedPatcher)
+                }
             }
-        }
     }
 
     override fun fabric(action: FabricLikePatcher.() -> Unit) {
-        mcPatcher = OfficialFabricMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as FabricLikePatcher)
+        mcPatcher =
+            OfficialFabricMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as FabricLikePatcher)
+                }
             }
-        }
     }
 
     override fun legacyFabric(action: LegacyFabricPatcher.() -> Unit) {
-        mcPatcher = LegacyFabricMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as LegacyFabricPatcher)
+        mcPatcher =
+            LegacyFabricMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as LegacyFabricPatcher)
+                }
             }
-        }
     }
 
     override fun babric(action: FabricLikePatcher.() -> Unit) {
-        mcPatcher = BabricMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as FabricLikePatcher)
+        mcPatcher =
+            BabricMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as FabricLikePatcher)
+                }
             }
-        }
     }
 
     override fun ornitheFabric(action: LegacyFabricPatcher.() -> Unit) {
-        mcPatcher = OrnitheFabricMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as LegacyFabricPatcher)
+        mcPatcher =
+            OrnitheFabricMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as LegacyFabricPatcher)
+                }
             }
-        }
     }
 
     override fun quilt(action: FabricLikePatcher.() -> Unit) {
-        mcPatcher = QuiltMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as FabricLikePatcher)
+        mcPatcher =
+            QuiltMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as FabricLikePatcher)
+                }
             }
-        }
     }
 
     override fun flint(action: FabricLikePatcher.() -> Unit) {
-        mcPatcher = FlintMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as FabricLikePatcher)
+        mcPatcher =
+            FlintMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as FabricLikePatcher)
+                }
             }
-        }
     }
 
     @Deprecated("Please specify which forge.", replaceWith = ReplaceWith("minecraftForge(action)"))
@@ -288,100 +330,115 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
     }
 
     override fun minecraftForge(action: MinecraftForgePatcher<*>.() -> Unit) {
-        mcPatcher = MinecraftForgeMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as MinecraftForgePatcher<*>)
+        mcPatcher =
+            MinecraftForgeMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as MinecraftForgePatcher<*>)
+                }
             }
-        }
     }
 
     override fun neoForge(action: NeoForgedPatcher<*>.() -> Unit) {
-        mcPatcher = NeoForgedMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as NeoForgedPatcher<*>)
+        mcPatcher =
+            NeoForgedMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as NeoForgedPatcher<*>)
+                }
             }
-        }
     }
 
     override fun cleanroom(action: CleanroomPatcher<*>.() -> Unit) {
-        mcPatcher = CleanroomMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as CleanroomPatcher<*>)
+        mcPatcher =
+            CleanroomMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as CleanroomPatcher<*>)
+                }
             }
-        }
     }
 
     override fun jarMod(action: JarModAgentPatcher.() -> Unit) {
-        mcPatcher = JarModAgentMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as JarModAgentPatcher)
+        mcPatcher =
+            JarModAgentMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as JarModAgentPatcher)
+                }
             }
-        }
     }
 
     override fun accessWidener(action: AccessWidenerPatcher.() -> Unit) {
-        mcPatcher = AccessWidenerMinecraftTransformer.DefaultTransformer(project, this).also {
-            patcherAction = {
-                action(it as AccessWidenerPatcher)
+        mcPatcher =
+            AccessWidenerMinecraftTransformer.DefaultTransformer(project, this).also {
+                patcherAction = {
+                    action(it as AccessWidenerPatcher)
+                }
             }
-        }
     }
 
     override fun accessTransformer(action: AccessTransformerPatcher.() -> Unit) {
-        mcPatcher = AccessTransformerMinecraftTransformer.DefaultTransformer(project, this).also {
-            patcherAction = {
-                action(it as AccessTransformerPatcher)
+        mcPatcher =
+            AccessTransformerMinecraftTransformer.DefaultTransformer(project, this).also {
+                patcherAction = {
+                    action(it as AccessTransformerPatcher)
+                }
             }
-        }
     }
 
     override fun craftBukkit(action: CraftbukkitPatcher.() -> Unit) {
-        mcPatcher = CraftbukkitMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as CraftbukkitPatcher)
+        mcPatcher =
+            CraftbukkitMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as CraftbukkitPatcher)
+                }
             }
-        }
     }
 
     override fun spigot(action: SpigotPatcher.() -> Unit) {
-        mcPatcher = SpigotMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as SpigotPatcher)
+        mcPatcher =
+            SpigotMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as SpigotPatcher)
+                }
             }
-        }
     }
 
     override fun rift(action: RiftPatcher.() -> Unit) {
-        mcPatcher = RiftMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as RiftPatcher)
+        mcPatcher =
+            RiftMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as RiftPatcher)
+                }
             }
-        }
     }
 
     override fun liteloader(action: LiteLoaderPatcher.() -> Unit) {
-        mcPatcher = LiteLoaderMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as LiteLoaderPatcher)
+        mcPatcher =
+            LiteLoaderMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as LiteLoaderPatcher)
+                }
             }
-        }
     }
 
     override fun paper(action: PaperPatcher.() -> Unit) {
-        mcPatcher = PaperMinecraftTransformer(project, this).also {
-            patcherAction = {
-                action(it as PaperPatcher)
+        mcPatcher =
+            PaperMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as PaperPatcher)
+                }
             }
-        }
     }
 
     @ApiStatus.Experimental
-    override fun <T: MinecraftPatcher> customPatcher(mcPatcher: T, action: T.() -> Unit) {
-        this.mcPatcher = mcPatcher.also {
-            patcherAction = {
-                action(it as T)
+    override fun <T : MinecraftPatcher> customPatcher(
+        mcPatcher: T,
+        action: T.() -> Unit,
+    ) {
+        this.mcPatcher =
+            mcPatcher.also {
+                patcherAction = {
+                    action(it as T)
+                }
             }
-        }
     }
 
     /**
@@ -392,22 +449,51 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
     /**
      * The name for the Minecraft dependency
      */
-    open val minecraftDepName: String = project.path.replace(":", "_").let { projectPath ->
-        "minecraft${if (projectPath == "_") "" else projectPath}${if (sourceSet.name == "main") "" else "+"+sourceSet.name}"
+    open val minecraftDepName: String by lazy {
+        val base =
+            project.path.replace(":", "_").let { projectPath ->
+                "minecraft${if (projectPath == "_") "" else projectPath}${if (sourceSet.name == "main") "" else "+" + sourceSet.name}"
+            }
+        // Encode the loader identity (name + version) and the user AT content into the
+        // dependency coordinates: same-coordinate changes otherwise make IDEA keep stale
+        // sources for this library (it identifies libraries by group:artifact:version).
+        val patcher = mcPatcher as? ForgeLikeMinecraftTransformer ?: return@lazy base
+        val forgeDep =
+            patcher.forge.dependencies
+                .filterIsInstance<ModuleDependency>()
+                .firstOrNull()
+        if (forgeDep == null) return@lazy base
+        val loaderName =
+            when (forgeDep.group) {
+                "com.cleanroommc" -> "cleanroom"
+                "net.minecraftforge" -> "forge"
+                "net.neoforged" -> "neoforge"
+                else -> forgeDep.name ?: "loader"
+            }
+        val suffix =
+            listOfNotNull(
+                loaderName,
+                forgeDep.version,
+                patcher.accessTransformer?.let { sha256Hex(it.toPath()).take(8) },
+            ).joinToString("-").replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        "$base-$suffix"
     }
 
     override val minecraftDependency: ModuleDependency by lazy {
-        project.dependencies.create(buildString {
-            append("$mavenGroup:$minecraftDepName:$version")
-            if (minecraftFileDev.name.endsWith("-linemapped.jar")) {
-                append(":linemapped")
-            }
-            if (minecraftFileDev.extension != "jar") {
-                append("@${minecraftFileDev.extension}")
-            }
-        }).also {
-            project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] $minecraftDepName dependency: $it")
-        } as ModuleDependency
+        project.dependencies
+            .create(
+                buildString {
+                    append("$mavenGroup:$minecraftDepName:$version")
+                    if (minecraftFileDev.name.endsWith("-linemapped.jar")) {
+                        append(":linemapped")
+                    }
+                    if (minecraftFileDev.extension != "jar") {
+                        append("@${minecraftFileDev.extension}")
+                    }
+                },
+            ).also {
+                project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] $minecraftDepName dependency: $it")
+            } as ModuleDependency
     }
 
     protected val extractDependencies: MutableMap<Dependency, Extract> = mutableMapOf()
@@ -434,7 +520,9 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
                 project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] Added dependency ${candidate.name}")
                 val library = filterLibrary(candidate)
                 if (library == null) {
-                    project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] Excluding dependency ${candidate.name} as it is filtered by the patcher")
+                    project.logger.info(
+                        "[Unimined/Minecraft ${project.path}:${sourceSet.name}] Excluding dependency ${candidate.name} as it is filtered by the patcher",
+                    )
                     continue
                 }
                 val native = library.natives[OSUtils.oSId]
@@ -444,7 +532,9 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
                     library.extract?.let { extractDependencies[dep] = it }
                 }
                 if (native != null) {
-                    project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] Added native dependency ${candidate.name}:$native")
+                    project.logger.info(
+                        "[Unimined/Minecraft ${project.path}:${sourceSet.name}] Added native dependency ${candidate.name}:$native",
+                    )
                     val nativeDep = project.dependencies.create("${library.name}:$native")
                     minecraftLibraries.dependencies.add(nativeDep)
                     library.extract?.let { extractDependencies[nativeDep] = it }
@@ -472,23 +562,26 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
     private inline fun <reified T> applyDefaultRemapJar(
         inputTaskName: String,
         remappingFunction: (Task, JarInterface<AbstractRemapJarTask>.() -> Unit) -> Unit,
-        crossinline defaultTaskConfiguration: Jar.(newTask: Boolean) -> Unit
+        crossinline defaultTaskConfiguration: Jar.(newTask: Boolean) -> Unit,
     ) where T : AbstractRemapJarTask, T : JarInterface<AbstractRemapJarTask> {
-
         var inputTask = project.tasks.findByName(inputTaskName.withSourceSet(sourceSet))
         if (inputTask == null && createJarTask) {
             project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] Creating default $inputTaskName for $sourceSet")
-            inputTask = project.tasks.register(inputTaskName.withSourceSet(sourceSet), Jar::class.java) {
-                it.group = "build"
-                defaultTaskConfiguration(it, true)
-            }.getOrNull()
+            inputTask =
+                project.tasks
+                    .register(inputTaskName.withSourceSet(sourceSet), Jar::class.java) {
+                        it.group = "build"
+                        defaultTaskConfiguration(it, true)
+                    }.getOrNull()
         } else if (inputTask != null) {
             if (inputTask is Jar) {
                 inputTask.also {
                     defaultTaskConfiguration(it, false)
                 }
             } else {
-                project.logger.warn("[Unimined/Minecraft ${project.path}:${sourceSet.name}] task $inputTaskName for $sourceSet is not an instance of ${Jar::class.qualifiedName}")
+                project.logger.warn(
+                    "[Unimined/Minecraft ${project.path}:${sourceSet.name}] task $inputTaskName for $sourceSet is not an instance of ${Jar::class.qualifiedName}",
+                )
                 return
             }
         }
@@ -510,9 +603,13 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
             project.tasks.getByName("assemble").dependsOn("remap" + inputTask.name.capitalized())
         } else {
             project.logger.warn(
-                "[Unimined/Minecraft ${project.path}:${sourceSet.name}] Could not find default task '${inputTaskName.withSourceSet(sourceSet)} for $sourceSet."
+                "[Unimined/Minecraft ${project.path}:${sourceSet.name}] Could not find default task '${inputTaskName.withSourceSet(
+                    sourceSet,
+                )} for $sourceSet.",
             )
-            project.logger.warn("[Unimined/Minecraft ${project.path}:${sourceSet.name}] add manually with `remapSources(task)` in the minecraft block for $sourceSet")
+            project.logger.warn(
+                "[Unimined/Minecraft ${project.path}:${sourceSet.name}] add manually with `remapSources(task)` in the minecraft block for $sourceSet",
+            )
         }
     }
 
@@ -522,9 +619,11 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
             EnvType.CLIENT -> {
                 provideRunClientTask("client", project.file("run/client"))
             }
+
             EnvType.SERVER -> {
                 provideRunServerTask("server", project.file("run/server"))
             }
+
             EnvType.JOINED -> {
                 provideRunClientTask("client", project.file("run/client"))
                 provideRunServerTask("server", project.file("run/server"))
@@ -539,7 +638,7 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         name: String,
         @Language("regex")
         classifier: String,
-        version: (String) -> String?
+        version: (String) -> String?,
     ) {
         if (applied) throw IllegalStateException("minecraft config already applied for $sourceSet")
         libraryReplaceMap.add { dep ->
@@ -553,6 +652,7 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
                         false to null
                     }
                 }
+
                 3 -> {
                     val (g, n, v) = match
                     if (g.matches(group.toRegex()) && n.matches(name.toRegex())) {
@@ -561,6 +661,7 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
                         false to null
                     }
                 }
+
                 4 -> {
                     val (g, n, v, c) = match
                     if (g.matches(group.toRegex()) && n.matches(name.toRegex()) && c.matches(classifier.toRegex())) {
@@ -569,6 +670,7 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
                         false to null
                     }
                 }
+
                 else -> {
                     false to null
                 }
@@ -591,7 +693,9 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         patcherAction(mcPatcher)
 
         if (side !in mcPatcher.supportedEnvs) {
-            throw IllegalStateException("Side $side is not supported by ${mcPatcher.name()}, supported sides are ${mcPatcher.supportedEnvs}")
+            throw IllegalStateException(
+                "Side $side is not supported by ${mcPatcher.name()}, supported sides are ${mcPatcher.supportedEnvs}",
+            )
         }
 
         project.logger.info("[Unimined/MappingProvider ${project.path}:${sourceSet.name}] before mappings $sourceSet")
@@ -599,7 +703,9 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
 
         // finalize mapping deps
         runBlocking {
-            project.logger.info("[Unimined/MappingProvider ${project.path}:${sourceSet.name}] $sourceSet mappings: ${mappings.resolve().namespaces}")
+            project.logger.info(
+                "[Unimined/MappingProvider ${project.path}:${sourceSet.name}] $sourceSet mappings: ${mappings.resolve().namespaces}",
+            )
         }
 
         // late actions done
@@ -650,17 +756,20 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         runs.apply()
 
         // add gen sources task
-        project.tasks.register("genSources".withSourceSet(sourceSet), GenSourcesTaskImpl::class.java, this).configure(consumerApply {
-            group = "unimined"
-            description = "Generates sources for $sourceSet's minecraft jar"
-        })
+        project.tasks.register("genSources".withSourceSet(sourceSet), GenSourcesTaskImpl::class.java, this).configure(
+            consumerApply {
+                group = "unimined"
+                description = "Generates sources for $sourceSet's minecraft jar"
+            },
+        )
 
         // add export mappings task
-        project.tasks.register("exportMappings".withSourceSet(sourceSet), ExportMappingsTaskImpl::class.java, this.mappings).configure(consumerApply {
-            group = "unimined"
-            description = "Exports mappings for $sourceSet's minecraft jar"
-        })
-
+        project.tasks.register("exportMappings".withSourceSet(sourceSet), ExportMappingsTaskImpl::class.java, this.mappings).configure(
+            consumerApply {
+                group = "unimined"
+                description = "Exports mappings for $sourceSet's minecraft jar"
+            },
+        )
     }
 
     fun afterEvaluate() {
@@ -737,21 +846,24 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
             when (side) {
                 EnvType.JOINED -> {
                     path == minecraftData.minecraftClientFile.toPath() ||
-                    path == minecraftData.minecraftServerFile.toPath() ||
-                    path == mergedOfficialMinecraftFile?.toPath()
+                        path == minecraftData.minecraftServerFile.toPath() ||
+                        path == mergedOfficialMinecraftFile?.toPath()
                 }
+
                 EnvType.CLIENT -> {
                     path == minecraftData.minecraftClientFile.toPath()
                 }
+
                 EnvType.SERVER -> {
                     path == minecraftData.minecraftServerFile.toPath()
                 }
             }
 
-
-
     @ApiStatus.Internal
-    open fun provideRunClientTask(name: String, defaultWorkingDir: File) {
+    open fun provideRunClientTask(
+        name: String,
+        defaultWorkingDir: File,
+    ) {
         project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] client config, $name")
 
         runs.preLaunch(name) {
@@ -768,22 +880,24 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
             }
         }
 
-        val infoFile = minecraftData.mcVersionFolder
-            .resolve("${version}.info")
+        val infoFile =
+            minecraftData.mcVersionFolder
+                .resolve("$version.info")
         // TODO: replace with function to overlay betacraft version json in metadata
         if (!infoFile.exists()) {
             if (!project.gradle.startParameter.isOffline) {
-                //test if betacraft has our version on file
-                val url = URI.create(
-                    "https://files.betacraft.uk/launcher/assets/jsons/${
-                        URLEncoder.encode(
-                            minecraftData.metadata.id,
-                            StandardCharsets.UTF_8.name()
-                        )
-                    }.info"
-                )
-                    .toURL()
-                    .openConnection() as HttpURLConnection
+                // test if betacraft has our version on file
+                val url =
+                    URI
+                        .create(
+                            "https://files.betacraft.uk/launcher/assets/jsons/${
+                                URLEncoder.encode(
+                                    minecraftData.metadata.id,
+                                    StandardCharsets.UTF_8.name(),
+                                )
+                            }.info",
+                        ).toURL()
+                        .openConnection() as HttpURLConnection
                 url.setRequestProperty("User-Agent", "Wagyourtail/Unimined 1.0 (<wagyourtail@wagyourtail.xyz>)")
                 url.requestMethod = "GET"
                 url.connect()
@@ -791,7 +905,7 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
                     infoFile.writeBytes(
                         url.inputStream.readBytes(),
                         StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.CREATE
+                        StandardOpenOption.CREATE,
                     )
                 } else if (url.responseCode == 404) {
                     // doesn't exist
@@ -800,48 +914,57 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
             }
         }
 
-        val betacraftArgs = if (infoFile.exists()) {
-            val properties = Properties()
-            infoFile.inputStream().use { properties.load(it) }
-            properties.getProperty("proxy-args")?.split(" ") ?: listOf()
-        } else {
-            listOf()
-        }
+        val betacraftArgs =
+            if (infoFile.exists()) {
+                val properties = Properties()
+                infoFile.inputStream().use { properties.load(it) }
+                properties.getProperty("proxy-args")?.split(" ") ?: listOf()
+            } else {
+                listOf()
+            }
 
         val assetsDir = AssetsDownloader.assetsDir(project)
 
         runs.configFirst(name) {
             description = "Minecraft Client"
 
-            properties.putAll(mapOf(
-                "natives_directory" to {
-                    workingDir.resolve("natives").absolutePath
-                },
-                "library_directory" to {
-                    workingDir.resolve("libraries").absolutePath
-                },
-                "auth_player_name" to {
-                    runs.auth.authInfo?.username ?: "Dev"
-                },
-                "auth_uuid" to {
-                    runs.auth.authInfo?.uuid?.toString() ?: UUID.nameUUIDFromBytes("OfflinePlayer:${properties.getValue("auth_player_name").invoke()}".toByteArray(StandardCharsets.UTF_8)).toString()
-                },
-                "game_directory" to {
-                    workingDir.absolutePath
-                },
-                "assets_root" to {
-                    assetsDir.absolutePathString()
-                },
-                "game_assets" to {
-                    workingDir.resolve("resources").toString()
-                },
-                "auth_access_token" to {
-                    runs.auth.authInfo?.accessToken ?: "0"
-                },
-                "auth_session" to {
-                    runs.auth.authInfo?.accessToken ?: "0"
-                },
-            ))
+            properties.putAll(
+                mapOf(
+                    "natives_directory" to {
+                        workingDir.resolve("natives").absolutePath
+                    },
+                    "library_directory" to {
+                        workingDir.resolve("libraries").absolutePath
+                    },
+                    "auth_player_name" to {
+                        runs.auth.authInfo?.username ?: "Dev"
+                    },
+                    "auth_uuid" to {
+                        runs.auth.authInfo
+                            ?.uuid
+                            ?.toString()
+                            ?: UUID
+                                .nameUUIDFromBytes(
+                                    "OfflinePlayer:${properties.getValue("auth_player_name").invoke()}".toByteArray(StandardCharsets.UTF_8),
+                                ).toString()
+                    },
+                    "game_directory" to {
+                        workingDir.absolutePath
+                    },
+                    "assets_root" to {
+                        assetsDir.absolutePathString()
+                    },
+                    "game_assets" to {
+                        workingDir.resolve("resources").toString()
+                    },
+                    "auth_access_token" to {
+                        runs.auth.authInfo?.accessToken ?: "0"
+                    },
+                    "auth_session" to {
+                        runs.auth.authInfo?.accessToken ?: "0"
+                    },
+                ),
+            )
             javaVersion = minecraftData.metadata.javaVersion
             workingDir = defaultWorkingDir
             classpath = sourceSet.runtimeClasspath
@@ -854,7 +977,10 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
     }
 
     @ApiStatus.Internal
-    fun provideRunServerTask(name: String, defaultWorkingDir: File) {
+    fun provideRunServerTask(
+        name: String,
+        defaultWorkingDir: File,
+    ) {
         project.logger.info("[Unimined/Minecraft ${project.path}:${sourceSet.name}] server config, $name")
 
         runs.configFirst(name) {
@@ -878,9 +1004,15 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
         val sourceSets = mutableSetOf<Pair<Project, SourceSet>>()
         val projects = project.rootProject.allprojects
         for (project in projects) {
-            for (sourceSet in project.extensions.findByType(SourceSetContainer::class.java)?.asMap?.values
+            for (sourceSet in project.extensions
+                .findByType(SourceSetContainer::class.java)
+                ?.asMap
+                ?.values
                 ?: listOf()) {
-                if (sourceSet.output.files.intersect(this.sourceSet.runtimeClasspath.files).isNotEmpty()) {
+                if (sourceSet.output.files
+                        .intersect(this.sourceSet.runtimeClasspath.files)
+                        .isNotEmpty()
+                ) {
                     sourceSets.add(project to sourceSet)
                 }
             }
@@ -896,10 +1028,14 @@ open class MinecraftProvider(project: Project, sourceSet: SourceSet) : Minecraft
 
             for ((sourceSet, minecraftConfig) in minecraftConfigs.nonNullValues()) {
                 if (mappings.devNamespace != minecraftConfig.mappings.devNamespace) {
-                    throw IllegalArgumentException("All combined minecraft configs must be on the same mappings, found ${this.sourceSet} on ${mappings.devNamespace} and $sourceSet on ${minecraftConfig.mappings.devNamespace}")
+                    throw IllegalArgumentException(
+                        "All combined minecraft configs must be on the same mappings, found ${this.sourceSet} on ${mappings.devNamespace} and $sourceSet on ${minecraftConfig.mappings.devNamespace}",
+                    )
                 }
                 if (version != minecraftConfig.version) {
-                    throw IllegalArgumentException("All combined minecraft configs must be on the same version, found ${this.sourceSet} on ${this.version} and $sourceSet on ${minecraftConfig.version}")
+                    throw IllegalArgumentException(
+                        "All combined minecraft configs must be on the same version, found ${this.sourceSet} on ${this.version} and $sourceSet on ${minecraftConfig.version}",
+                    )
                 }
             }
         }

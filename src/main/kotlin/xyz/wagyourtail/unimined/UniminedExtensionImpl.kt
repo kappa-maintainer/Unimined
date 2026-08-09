@@ -16,12 +16,17 @@ import xyz.wagyourtail.unimined.util.withSourceSet
 import java.net.URI
 import java.nio.file.Path
 
-open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) {
-
+open class UniminedExtensionImpl(
+    project: Project,
+) : UniminedExtension(project) {
     override val minecrafts = mutableMapOf<SourceSet, MinecraftConfig>()
     override val minecraftConfiguration = mutableMapOf<SourceSet, MinecraftConfig.() -> Unit>()
 
-    override fun minecraft(sourceSet: SourceSet, lateApply: Boolean, action: MinecraftConfig.() -> Unit) {
+    override fun minecraft(
+        sourceSet: SourceSet,
+        lateApply: Boolean,
+        action: MinecraftConfig.() -> Unit,
+    ) {
         if (minecrafts.containsKey(sourceSet)) {
             if (minecrafts[sourceSet] !is MinecraftProvider) {
                 throw IllegalStateException("game config for ${sourceSet.name} already exists, and is not minecraft!")
@@ -48,7 +53,11 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         if (!lateApply) (minecrafts[sourceSet] as MinecraftProvider).apply()
     }
 
-    override fun reIndev(sourceSet: SourceSet, lateApply: Boolean, action: MinecraftConfig.() -> Unit) {
+    override fun reIndev(
+        sourceSet: SourceSet,
+        lateApply: Boolean,
+        action: MinecraftConfig.() -> Unit,
+    ) {
         if (minecrafts.containsKey(sourceSet)) {
             if (minecrafts[sourceSet] !is ReIndevProvider) {
                 throw IllegalStateException("game config for ${sourceSet.name} exists and is not reIndev!")
@@ -74,7 +83,11 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         if (!lateApply) (minecrafts[sourceSet] as ReIndevProvider).apply()
     }
 
-    override fun bta(sourceSet: SourceSet, lateApply: Boolean, action: MinecraftConfig.() -> Unit) {
+    override fun bta(
+        sourceSet: SourceSet,
+        lateApply: Boolean,
+        action: MinecraftConfig.() -> Unit,
+    ) {
         if (minecrafts.containsKey(sourceSet)) {
             if (minecrafts[sourceSet] !is BTAProvider) {
                 throw IllegalStateException("game config for ${sourceSet.name} exists and is not bta!")
@@ -100,9 +113,18 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         if (!lateApply) (minecrafts[sourceSet] as BTAProvider).apply()
     }
 
-    override fun migrateMappings(sourceSet: SourceSet, action: MigrateMappingsTask.() -> Unit) {
+    override fun migrateMappings(
+        sourceSet: SourceSet,
+        action: MigrateMappingsTask.() -> Unit,
+    ) {
 //        MigrateMappingsTaskImpl(project, sourceSet).apply(action)
-        project.tasks.register("migrateMappings".withSourceSet(sourceSet), MigrateMappingsTaskImpl::class.java, sourceSet).orNull?.apply(action)
+        project.tasks
+            .register(
+                "migrateMappings".withSourceSet(sourceSet),
+                MigrateMappingsTaskImpl::class.java,
+                sourceSet,
+            ).orNull
+            ?.apply(action)
     }
 
     private fun getMinecraftDepNames(): Set<String> = minecrafts.values.map { (it as MinecraftProvider).minecraftDepName }.toSet()
@@ -112,13 +134,19 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         return minecrafts.keys.find { it.name == sourceSetName } ?: throw IllegalArgumentException("no source set found for $sourceSetName")
     }
 
-    override val modsRemapRepo = project.repositories.maven {
-        it.name = "modsRemap"
-        it.url = getLocalCache().resolve("modTransform").toUri()
-        it.content {
-            it.includeGroupByRegex("remapped_.*")
+    override val modsRemapRepo =
+        project.repositories.maven {
+            it.name = "modsRemap"
+            // modTransform uses a Maven-like directory layout:
+            // <group>/<module>/<version>/<module>-<version>(-<classifier>).jar + .module/.pom metadata.
+            // The synthetic .module declares apiElements/runtimeElements (remapped dev jar) and
+            // sourcesElements, so both binary resolution and IDEA's SourcesArtifact query resolve
+            // against declared variants instead of classifier conventions.
+            it.url = getLocalCache().resolve("modTransform").toUri()
+            it.content {
+                it.includeGroupByRegex("remapped_.*")
+            }
         }
-    }
 
     val minecraftForgeMaven by lazy {
         project.repositories.maven {
@@ -167,6 +195,7 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
             it.url = URI.create("https://maven.ornithemc.net/releases")
         }
     }
+
     override fun ornitheMaven() {
         project.logger.info("[Unimined] adding Ornithe maven: $ornitheMaven")
     }
@@ -177,6 +206,7 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
             it.url = URI.create("https://maven.legacyfabric.net")
         }
     }
+
     override fun legacyFabricMaven() {
         project.logger.info("[Unimined] adding Legacy Fabric maven: $legacyFabricMaven")
     }
@@ -192,23 +222,25 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         project.logger.info("[Unimined] adding Quilt maven: $quiltMaven")
     }
 
-    val glassLauncherMaven = defaultedMapOf<String, MavenArtifactRepository> { name ->
-        project.repositories.maven {
-            it.name = "Glass (${name.capitalized()})"
-            it.url = URI.create("https://maven.glass-launcher.net/$name/")
+    val glassLauncherMaven =
+        defaultedMapOf<String, MavenArtifactRepository> { name ->
+            project.repositories.maven {
+                it.name = "Glass (${name.capitalized()})"
+                it.url = URI.create("https://maven.glass-launcher.net/$name/")
+            }
         }
-    }
 
     override fun glassLauncherMaven(name: String) {
         project.logger.info("[Unimined] adding Glass Launcher maven: ${glassLauncherMaven[name]}")
     }
 
-    val wispForestMaven = defaultedMapOf<String, MavenArtifactRepository> { name ->
-        project.repositories.maven {
-            it.name = "Wisp Forest"
-            it.url = URI.create("https://maven.wispforest.io/$name")
+    val wispForestMaven =
+        defaultedMapOf<String, MavenArtifactRepository> { name ->
+            project.repositories.maven {
+                it.name = "Wisp Forest"
+                it.url = URI.create("https://maven.wispforest.io/$name")
+            }
         }
-    }
 
     override fun wispForestMaven(name: String) {
         project.logger.info("[Unimined] adding Wisp Forest maven: ${wispForestMaven[name]}")
@@ -225,16 +257,17 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         project.logger.info("[Unimined] adding Sleeping Town maven: $sleepingTownMaven")
     }
 
-    val wagYourMaven = defaultedMapOf<String, MavenArtifactRepository> { name ->
-        project.repositories.maven {
-            it.name = "WagYourTail (${name.capitalized()})"
-            it.url = project.uri("https://maven.wagyourtail.xyz/$name/")
-            it.metadataSources { ms ->
-                ms.mavenPom()
-                ms.artifact()
+    val wagYourMaven =
+        defaultedMapOf<String, MavenArtifactRepository> { name ->
+            project.repositories.maven {
+                it.name = "WagYourTail (${name.capitalized()})"
+                it.url = project.uri("https://maven.wagyourtail.xyz/$name/")
+                it.metadataSources { ms ->
+                    ms.mavenPom()
+                    ms.artifact()
+                }
             }
         }
-    }
 
     override fun wagYourMaven(name: String) {
         project.logger.info("[Unimined] adding WagYourTail maven: ${wagYourMaven[name]}")
@@ -315,24 +348,26 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         project.logger.info("[Unimined] adding spigot maven: $spigot")
     }
 
-    val flintMaven = defaultedMapOf<String, MavenArtifactRepository> { name ->
-        project.repositories.maven {
-            it.name = "Flint (${name.capitalized()})"
-            it.url = URI.create("https://maven.flintloader.net/$name/")
+    val flintMaven =
+        defaultedMapOf<String, MavenArtifactRepository> { name ->
+            project.repositories.maven {
+                it.name = "Flint (${name.capitalized()})"
+                it.url = URI.create("https://maven.flintloader.net/$name/")
+            }
         }
-    }
 
     override fun flintMaven(name: String) {
         project.logger.info("[Unimined] adding Flint Loader maven: ${flintMaven[name]}")
     }
 
-    val cleanroomMaven = defaultedMapOf<String, MavenArtifactRepository> { name ->
-        project.repositories.maven {
-            it.name = "cleanroom-$it"
-            it.url = URI.create("https://repo.cleanroommc.com/$name")
-            it.content { it.excludeGroup("curse.maven") }
+    val cleanroomMaven =
+        defaultedMapOf<String, MavenArtifactRepository> { name ->
+            project.repositories.maven {
+                it.name = "cleanroom-$it"
+                it.url = URI.create("https://repo.cleanroommc.com/$name")
+                it.content { it.excludeGroup("curse.maven") }
+            }
         }
-    }
 
     override fun cleanroomRepos() {
         project.logger.info("[Unimined] adding cleanroom maven: ${cleanroomMaven["snapshots"]}")
@@ -362,16 +397,17 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
         project.logger.info("[Unimined] adding Fox2Code maven: $fox2codeMaven")
     }
 
-    val signalumMaven = defaultedMapOf<String, MavenArtifactRepository> { name ->
-        project.repositories.maven {
-            it.name = "Signalum (${name.capitalized()})"
-            it.url = project.uri("https://maven.thesignalumproject.net/$name/")
-            it.metadataSources { ms ->
-                ms.mavenPom()
-                ms.artifact()
+    val signalumMaven =
+        defaultedMapOf<String, MavenArtifactRepository> { name ->
+            project.repositories.maven {
+                it.name = "Signalum (${name.capitalized()})"
+                it.url = project.uri("https://maven.thesignalumproject.net/$name/")
+                it.metadataSources { ms ->
+                    ms.mavenPom()
+                    ms.artifact()
+                }
             }
         }
-    }
 
     override fun signalumMaven(name: String) {
         project.logger.info("[Unimined] adding Signalum maven: ${signalumMaven[name]}")
@@ -538,7 +574,7 @@ open class UniminedExtensionImpl(project: Project) : UniminedExtension(project) 
             }
         }
         project.repositories.maven { repo ->
-            repo.name = "forge" //backup
+            repo.name = "forge" // backup
             repo.url = URI.create("https://maven.minecraftforge.net/")
             repo.content {
                 it.includeGroup("org.lwjgl")
