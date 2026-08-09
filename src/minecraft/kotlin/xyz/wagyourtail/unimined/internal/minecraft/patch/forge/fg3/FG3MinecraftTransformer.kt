@@ -4,6 +4,7 @@ import com.github.javaparser.JavaParser
 import com.github.javaparser.ParserConfiguration
 import com.github.javaparser.ast.CompilationUnit
 import com.github.javaparser.ast.body.BodyDeclaration
+import com.github.javaparser.ast.type.Type
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter
 import com.github.javaparser.symbolsolver.JavaSymbolSolver
 import com.github.javaparser.symbolsolver.resolution.typesolvers.TypeSolverBuilder
@@ -56,6 +57,7 @@ import java.io.InputStreamReader
 import java.io.PrintStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.*
+import java.util.concurrent.Executors
 import java.util.jar.JarFile
 import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
@@ -1219,33 +1221,27 @@ open class FG3MinecraftTransformer(
         } else {
             if (provider.mappings.checkedNs(obfNamespace) != provider.mappings.devNamespace) {
                 this.intiMapping()
+                // private-step cache: javadoc / builtin-AT / remap artifacts are content-addressed by
+                // their inputs, so (a) an AT-only change re-runs just the final applyAT, and (b)
+                // projects with identical inputs (same mcp_config, same forgePatch output) share jars
+                val cacheDir = outputPath.parent.resolve("sources-cache")
                 val temp =
                     outputPath.parent.resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}.jar")
-                val temp1 =
-                    outputPath.parent.resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}-javadoc.jar")
-                val temp2 =
-                    if (shouldAT) {
-                        outputPath.parent.resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}-remapped.jar")
-                    } else {
-                        outputPath
-                    }
                 executeMcp("forgePatch", temp)
-                appendJavadoc(temp, temp1, patchedJar)
-                // builtin (srg-named) ATs are applied to the srg-named sources before remap,
-                // replacing the old bytecode-level applyAts step that ran before decompile
-                val tempAt =
-                    if (!builtinAtMap.isEmpty) {
-                        outputPath.parent
-                            .resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}-at.jar")
-                            .also {
-                                applyAT(temp1, it, patchedJar, builtinAtMap)
-                            }
-                    } else {
-                        temp1
+                val temp1 =
+                    cachedArtifact(cacheDir, "javadoc", listOf(temp, mcpFile!!.toPath(), patchedJar)) { out ->
+                        // javadoc + builtin (srg-named) ATs applied in a single parse pass;
+                        // builtin ATs replace the old bytecode-level applyAts step that ran before decompile
+                        javadocAndApplyAT(temp, out, patchedJar, builtinAtMap)
                     }
-                remapSourceJar(tempAt, temp2)
+                val temp2 =
+                    cachedArtifact(cacheDir, "remapped", listOf(temp1, mcpFile!!.toPath())) { out ->
+                        remapSourceJar(temp1, out)
+                    }
                 if (shouldAT) {
                     applyAT(temp2, outputPath, patchedJar, atMap)
+                } else {
+                    Files.copy(temp2, outputPath, StandardCopyOption.REPLACE_EXISTING)
                 }
                 /*
                 provider.sourceProvider.sourceRemapper.remap(
@@ -1260,73 +1256,177 @@ open class FG3MinecraftTransformer(
         }
     }
 
-    private fun appendJavadoc(
+    private fun javadocAndApplyAT(
         input: Path,
         output: Path,
         patchedJar: Path,
+        atMap: ArrayListMultimap<String, Modifier>,
     ) {
-        project.logger.info("Appending Javadoc on {}", input)
+        project.logger.info("Appending Javadoc and applying ATs on {}", input)
         val inputJar = JarFile(input.toFile())
         val parserConfiguration =
             ParserConfiguration()
                 .setLexicalPreservationEnabled(true)
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
                 .setSymbolResolver(JavaSymbolSolver(TypeSolverBuilder().withJAR(patchedJar).withCurrentJRE().build()))
-        val parser = JavaParser(parserConfiguration)
         val outStream = JarOutputStream(FileOutputStream(output.toFile()))
-
-        inputJar.entries().iterator().forEach { entry ->
-            if (entry.name.endsWith(".java")) {
-                val cu: CompilationUnit = parser.parse(inputJar.getInputStream(entry)).result.get()
-                val types = mutableListOf<BodyDeclaration<*>>()
-                cu.types.forEach { type ->
-                    type.members.forEach { member ->
-                        if (member.isClassOrInterfaceDeclaration) {
-                            types.add(member.asClassOrInterfaceDeclaration())
+        val javaEntries =
+            inputJar
+                .entries()
+                .asSequence()
+                .filter { it.name.endsWith(".java") }
+                .toList()
+        val threads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+        if (threads <= 1 || javaEntries.size < 8) {
+            // sequential path
+            val parser = JavaParser(parserConfiguration)
+            for (entry in javaEntries) {
+                writeEntry(outStream, entry.name, transformSourceEntry(inputJar, entry, parser, atMap))
+            }
+        } else {
+            // parallel path: one parser + one JarFile per worker thread, results written in entry order
+            val executor = Executors.newFixedThreadPool(threads)
+            try {
+                val threadState =
+                    ThreadLocal.withInitial {
+                        JavaParser(parserConfiguration) to JarFile(input.toFile())
+                    }
+                val futures =
+                    javaEntries.map { entry ->
+                        executor.submit<Pair<String, ByteArray>> {
+                            val (parser, jar) = threadState.get()
+                            entry.name to transformSourceEntry(jar, jar.getEntry(entry.name), parser, atMap)
                         }
                     }
+                for (future in futures) {
+                    val (name, bytes) = future.get()
+                    writeEntry(outStream, name, bytes)
                 }
-                cu.types.forEach { type ->
-                    if (type.isClassOrInterfaceDeclaration) {
-                        types.add(type)
-                    }
-                }
-                types.forEach { type ->
-                    type.asClassOrInterfaceDeclaration().fields.forEach { field ->
-                        val firstVar = field.variables.first()
-                        if (fieldsMap[firstVar.name.asString()] != null) {
-                            if (fieldsMap[firstVar.name.asString()]!!.second.isNotEmpty()) {
-                                try {
-                                    field.setJavadocComment(fieldsMap[firstVar.name.asString()]!!.second)
-                                } catch (e: Exception) {
-                                    project.logger.info(
-                                        "Failed setting Javadoc {} on field {}",
-                                        fieldsMap[firstVar.name.asString()]!!.second,
-                                        firstVar.name,
-                                        e,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    type.asClassOrInterfaceDeclaration().methods.forEach { method ->
-                        if (methodsMap[method.name.asString()] != null) {
-                            if (!methodsMap[method.name.asString()]!!.second.isEmpty()) {
-                                method.setJavadocComment(methodsMap[method.name.asString()]!!.second)
-                            }
-                        }
-                    }
-                }
-
-                val outEntry = ZipEntry(entry.name)
-                outStream.putNextEntry(outEntry)
-                IOUtils.write(LexicalPreservingPrinter.print(cu), outStream, StandardCharsets.UTF_8)
-                outStream.closeEntry()
+            } finally {
+                executor.shutdown()
             }
         }
         outStream.close()
     }
 
+    /**
+     * Parse one source entry, apply javadoc + ATs, and return the output bytes. Returns the
+     * original bytes when nothing was changed (no re-print through LexicalPreservingPrinter).
+     */
+    private fun transformSourceEntry(
+        jar: JarFile,
+        entry: ZipEntry,
+        parser: JavaParser,
+        atMap: ArrayListMultimap<String, Modifier>,
+    ): ByteArray {
+        val cu: CompilationUnit = parser.parse(jar.getInputStream(entry)).result.get()
+        // whether the file was actually touched; untouched files are copied byte-for-byte
+        // instead of being re-printed through LexicalPreservingPrinter
+        var changed = false
+        val types = mutableListOf<BodyDeclaration<*>>()
+        cu.types.forEach { type ->
+            type.members.forEach { member ->
+                if (member.isClassOrInterfaceDeclaration) {
+                    types.add(member.asClassOrInterfaceDeclaration())
+                }
+            }
+        }
+        cu.types.forEach { type ->
+            if (type.isClassOrInterfaceDeclaration) {
+                types.add(type)
+            }
+        }
+        types.forEach { type ->
+            val typeDecl = type.asClassOrInterfaceDeclaration()
+            // javadoc
+            typeDecl.fields.forEach { field ->
+                val firstVar = field.variables.first()
+                val javadoc = fieldsMap[firstVar.name.asString()]?.second
+                if (!javadoc.isNullOrEmpty()) {
+                    changed = true
+                    try {
+                        field.setJavadocComment(javadoc)
+                    } catch (e: Exception) {
+                        project.logger.info(
+                            "Failed setting Javadoc {} on field {}",
+                            javadoc,
+                            firstVar.name,
+                            e,
+                        )
+                    }
+                }
+            }
+            typeDecl.methods.forEach { method ->
+                val javadoc = methodsMap[method.name.asString()]?.second
+                if (!javadoc.isNullOrEmpty()) {
+                    changed = true
+                    method.setJavadocComment(javadoc)
+                }
+            }
+            // access transformers (srg-named at this stage)
+            val modifiers = atMap[typeDecl.fullyQualifiedName.get()]
+            if (modifiers.isNotEmpty()) {
+                changed = true
+                modifiers.forEach { modifier ->
+                    if (modifier.modifyClass) {
+                        typeDecl.isPublic = true
+                        typeDecl.isPrivate = false
+                        typeDecl.isProtected = false
+                        if (modifier.modifyFinal) {
+                            typeDecl.isFinal = false
+                        }
+                    } else if (modifier.desc.isEmpty()) {
+                        typeDecl.fields.forEach { field ->
+                            if (modifier.name == "*" || field.getVariable(0).name.asString() == modifier.name) {
+                                if (modifier.modifyFinal) {
+                                    field.isFinal = false
+                                }
+                                field.isPublic = true
+                                field.isPrivate = false
+                                field.isProtected = false
+                            }
+                        }
+                    } else {
+                        typeDecl.methods.forEach { method ->
+                            if ((modifier.name == "*" && modifier.desc == "()") ||
+                                (method.name.asString() == modifier.name && method.toDescriptor() == modifier.desc)
+                            ) {
+                                if (modifier.modifyFinal) {
+                                    method.isFinal = false
+                                }
+                                method.isPublic = true
+                                method.isPrivate = false
+                                method.isProtected = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return if (changed) {
+            LexicalPreservingPrinter.print(cu).toByteArray(StandardCharsets.UTF_8)
+        } else {
+            jar.getInputStream(entry).use { it.readBytes() }
+        }
+    }
+
+    private fun writeEntry(
+        outStream: JarOutputStream,
+        name: String,
+        bytes: ByteArray,
+    ) {
+        val outEntry = ZipEntry(name)
+        outStream.putNextEntry(outEntry)
+        outStream.write(bytes)
+        outStream.closeEntry()
+    }
+
+    /**
+     * JVM method descriptor built from source types without a SymbolResolver (javaparser's own
+     * [MethodDeclaration.toDescriptor] requires one). Returns null when a type cannot be mapped
+     * (generic type parameters fall back to their erasure, unresolvable names to null = no match).
+     */
     private fun remapSourceJar(
         input: Path,
         output: Path,
@@ -1393,72 +1493,150 @@ open class FG3MinecraftTransformer(
                 .setLexicalPreservationEnabled(true)
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21)
                 .setSymbolResolver(JavaSymbolSolver(TypeSolverBuilder().withJAR(patchedJar).withCurrentJRE().build()))
-        val parser = JavaParser(parserConfiguration)
         val outStream = JarOutputStream(FileOutputStream(output.toFile()))
-
-        inputJar.entries().iterator().forEach { entry ->
-            if (entry.name.endsWith(".java")) {
-                val cu: CompilationUnit = parser.parse(inputJar.getInputStream(entry)).result.get()
-                val types = mutableListOf<BodyDeclaration<*>>()
-                cu.types.forEach { type ->
-                    type.members.forEach { member ->
-                        if (member.isClassOrInterfaceDeclaration) {
-                            types.add(member.asClassOrInterfaceDeclaration())
+        val javaEntries =
+            inputJar
+                .entries()
+                .asSequence()
+                .filter { it.name.endsWith(".java") }
+                .toList()
+        val threads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+        if (threads <= 1 || javaEntries.size < 8) {
+            val parser = JavaParser(parserConfiguration)
+            for (entry in javaEntries) {
+                writeEntry(outStream, entry.name, transformAtEntry(inputJar, entry, parser, atMap))
+            }
+        } else {
+            val executor = Executors.newFixedThreadPool(threads)
+            try {
+                val threadState =
+                    ThreadLocal.withInitial {
+                        JavaParser(parserConfiguration) to JarFile(input.toFile())
+                    }
+                val futures =
+                    javaEntries.map { entry ->
+                        executor.submit<Pair<String, ByteArray>> {
+                            val (parser, jar) = threadState.get()
+                            entry.name to transformAtEntry(jar, jar.getEntry(entry.name), parser, atMap)
                         }
                     }
+                for (future in futures) {
+                    val (name, bytes) = future.get()
+                    writeEntry(outStream, name, bytes)
                 }
-                cu.types.forEach { type ->
-                    if (type.isClassOrInterfaceDeclaration) {
-                        types.add(type)
-                    }
+            } finally {
+                executor.shutdown()
+            }
+        }
+        outStream.close()
+    }
+
+    private fun transformAtEntry(
+        jar: JarFile,
+        entry: ZipEntry,
+        parser: JavaParser,
+        atMap: ArrayListMultimap<String, Modifier>,
+    ): ByteArray {
+        val cu: CompilationUnit = parser.parse(jar.getInputStream(entry)).result.get()
+        // untouched files are copied byte-for-byte instead of re-printed
+        var changed = false
+        val types = mutableListOf<BodyDeclaration<*>>()
+        cu.types.forEach { type ->
+            type.members.forEach { member ->
+                if (member.isClassOrInterfaceDeclaration) {
+                    types.add(member.asClassOrInterfaceDeclaration())
                 }
-                types.forEach { type ->
-                    val modifiers = atMap[type.asClassOrInterfaceDeclaration().fullyQualifiedName.get()]
-                    if (modifiers.isNotEmpty()) {
-                        modifiers.forEach { modifier ->
-                            if (modifier.modifyClass) {
-                                type.asClassOrInterfaceDeclaration().isPublic = true
-                                type.asClassOrInterfaceDeclaration().isPrivate = false
-                                type.asClassOrInterfaceDeclaration().isProtected = false
+            }
+        }
+        cu.types.forEach { type ->
+            if (type.isClassOrInterfaceDeclaration) {
+                types.add(type)
+            }
+        }
+        types.forEach { type ->
+            val modifiers = atMap[type.asClassOrInterfaceDeclaration().fullyQualifiedName.get()]
+            if (modifiers.isNotEmpty()) {
+                changed = true
+                modifiers.forEach { modifier ->
+                    if (modifier.modifyClass) {
+                        type.asClassOrInterfaceDeclaration().isPublic = true
+                        type.asClassOrInterfaceDeclaration().isPrivate = false
+                        type.asClassOrInterfaceDeclaration().isProtected = false
+                        if (modifier.modifyFinal) {
+                            type.asClassOrInterfaceDeclaration().isFinal = false
+                        }
+                    } else if (modifier.desc.isEmpty()) {
+                        type.asClassOrInterfaceDeclaration().fields.forEach { field ->
+                            if (modifier.name == "*" || field.getVariable(0).name.asString() == modifier.name) {
                                 if (modifier.modifyFinal) {
-                                    type.asClassOrInterfaceDeclaration().isFinal = false
+                                    field.isFinal = false
                                 }
-                            } else if (modifier.desc.isEmpty()) {
-                                type.asClassOrInterfaceDeclaration().fields.forEach { field ->
-                                    if (modifier.name == "*" || field.getVariable(0).name.asString() == modifier.name) {
-                                        if (modifier.modifyFinal) {
-                                            field.isFinal = false
-                                        }
-                                        field.isPublic = true
-                                        field.isPrivate = false
-                                        field.isProtected = false
-                                    }
+                                field.isPublic = true
+                                field.isPrivate = false
+                                field.isProtected = false
+                            }
+                        }
+                    } else {
+                        type.asClassOrInterfaceDeclaration().methods.forEach { method ->
+                            if ((modifier.name == "*" && modifier.desc == "()") ||
+                                (method.name.asString() == modifier.name && method.toDescriptor() == modifier.desc)
+                            ) {
+                                if (modifier.modifyFinal) {
+                                    method.isFinal = false
                                 }
-                            } else {
-                                type.asClassOrInterfaceDeclaration().methods.forEach { method ->
-                                    if ((modifier.name == "*" && modifier.desc == "()") ||
-                                        (method.name.asString() == modifier.name && method.toDescriptor() == modifier.desc)
-                                    ) {
-                                        if (modifier.modifyFinal) {
-                                            method.isFinal = false
-                                        }
-                                        method.isPublic = true
-                                        method.isPrivate = false
-                                        method.isProtected = false
-                                    }
-                                }
+                                method.isPublic = true
+                                method.isPrivate = false
+                                method.isProtected = false
                             }
                         }
                     }
                 }
-
-                val outEntry = ZipEntry(entry.name)
-                outStream.putNextEntry(outEntry)
-                IOUtils.write(LexicalPreservingPrinter.print(cu), outStream, StandardCharsets.UTF_8)
-                outStream.closeEntry()
             }
         }
-        outStream.close()
+
+        return if (changed) {
+            LexicalPreservingPrinter.print(cu).toByteArray(StandardCharsets.UTF_8)
+        } else {
+            jar.getInputStream(entry).use { it.readBytes() }
+        }
+    }
+
+    /**
+     * Content-addressed cache for a genSources private-step artifact (javadoc / builtin-AT /
+     * remap outputs). The output jar is named after the hash of its input files, so different
+     * inputs never collide and identical inputs (across projects) reuse the same jar.
+     * A sidecar `.fp` file stores the fingerprint; when the output exists and the fingerprint
+     * matches, the computation is skipped. Writing is tmp+atomic-move so concurrent projects
+     * never observe a half-written jar. [forceReload] bypasses the cache.
+     */
+    private fun cachedArtifact(
+        cacheDir: Path,
+        label: String,
+        inputs: List<Path>,
+        compute: (Path) -> Unit,
+    ): Path {
+        cacheDir.createDirectories()
+        val fp = fileFingerprint(inputs)
+        val name = "$label-${sha256Hex(fp).substring(0, 16)}"
+        val output = cacheDir.resolve("$name.jar")
+        val fpFile = cacheDir.resolve("$name.fp")
+        if (!project.unimined.forceReload && output.exists() && fpFile.exists() && fpFile.readText() == fp) {
+            project.logger.info("Reusing cached step: {}", name)
+            return output
+        }
+        project.logger.info("Executing step: {}", name)
+        val tmp = cacheDir.resolve("$name.jar.tmp")
+        tmp.deleteIfExists()
+        compute(tmp)
+        try {
+            Files.move(tmp, output, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: AtomicMoveNotSupportedException) {
+            Files.move(tmp, output, StandardCopyOption.REPLACE_EXISTING)
+        }
+        val fpTmp = cacheDir.resolve("$name.fp.tmp")
+        fpTmp.writeText(fp)
+        fpTmp.moveTo(fpFile, StandardCopyOption.REPLACE_EXISTING)
+        return output
     }
 
     data class Modifier(

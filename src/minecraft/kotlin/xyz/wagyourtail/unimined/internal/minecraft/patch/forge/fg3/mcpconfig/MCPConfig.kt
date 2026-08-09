@@ -14,6 +14,7 @@ import org.gradle.jvm.toolchain.JavaToolchainService
 import xyz.wagyourtail.commonskt.reader.StringCharReader
 import xyz.wagyourtail.unimined.api.unimined
 import xyz.wagyourtail.unimined.internal.minecraft.MinecraftProvider
+import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.sha256Hex
 import xyz.wagyourtail.unimined.mapping.EnvType
 import xyz.wagyourtail.unimined.mapping.Namespace
 import xyz.wagyourtail.unimined.mapping.formats.FormatRegistry
@@ -31,7 +32,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
 import java.util.jar.Attributes
 import java.util.jar.JarFile
 import kotlin.io.path.*
@@ -270,19 +270,6 @@ class MCPConfig(
             result
         }
 
-    private fun sha256(file: Path): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(file).use { input ->
-            val buf = ByteArray(1 shl 16)
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                md.update(buf, 0, n)
-            }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
-
     private fun hashInput(path: String): String {
         val p = Paths.get(path)
         return when {
@@ -290,14 +277,14 @@ class MCPConfig(
                 buildString {
                     Files.walk(p).use { s ->
                         s.filter { Files.isRegularFile(it) }.sorted().forEach {
-                            append(it.toString()).append('=').append(sha256(it)).append('\n')
+                            append(it.toString()).append('=').append(sha256Hex(it)).append('\n')
                         }
                     }
                 }
             }
 
             Files.exists(p) -> {
-                sha256(p)
+                sha256Hex(p)
             }
 
             else -> {
