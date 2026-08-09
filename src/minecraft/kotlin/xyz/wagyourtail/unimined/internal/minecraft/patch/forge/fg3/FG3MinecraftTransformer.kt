@@ -58,6 +58,7 @@ import java.io.InputStreamReader
 import java.io.PrintStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.*
+import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.jar.JarFile
 import java.util.jar.JarOutputStream
@@ -174,7 +175,17 @@ open class FG3MinecraftTransformer(
 
     private fun intiMapping() {
         if (created) return
-        val zip = ZipFile(mcpFile!!)
+        val mcp = mcpFile!!
+        // content-addressed cache: skip re-parsing the mcp zip when a previous build already
+        // produced the same mapping tables for it
+        val cacheFile =
+            cacheDir.resolve("mcp-mappings-${sha256Hex(mcp.toPath()).substring(0, 16)}.txt")
+        if (cacheFile.exists()) {
+            loadMappings(cacheFile)
+            created = true
+            return
+        }
+        val zip = ZipFile(mcp)
         runBlocking {
             for (fileName in zip.entries()) {
                 when (fileName.name) {
@@ -206,7 +217,7 @@ open class FG3MinecraftTransformer(
                                     methodsMap[values[0]] = values[1] to ""
                                 } else {
                                     var javadoc = values[3]
-                                    if (javadoc.startsWith("\"")) javadoc = javadoc.substring(1, javadoc.length)
+                                    if (javadoc.startsWith("\"")) javadoc = javadoc.substring(1, javadoc.length - 1)
                                     javadoc = javadoc.replace("\\n", "\n\t")
                                     methodsMap[values[0]] = values[1] to javadoc
                                 }
@@ -227,7 +238,76 @@ open class FG3MinecraftTransformer(
                 }
             }
         }
+        saveMappings(cacheFile)
         created = true
+    }
+
+    /**
+     * Persist the parsed mcp mapping tables (srg -> (mcp, javadoc) / mcp) so subsequent builds
+     * skip the CSV parsing. Javadoc is Base64-encoded because it contains newlines/tabs. Writes
+     * go through a temp file + atomic move.
+     */
+    private fun saveMappings(cacheFile: Path) {
+        val tmp = cacheFile.resolveSibling("${cacheFile.fileName}.tmp")
+        buildString {
+            append("[fields]\n")
+            for ((srg, pair) in fieldsMap) {
+                append(srg).append('\t').append(pair.first).append('\t')
+                append(Base64.getEncoder().encodeToString(pair.second.toByteArray(StandardCharsets.UTF_8))).append('\n')
+            }
+            append("[methods]\n")
+            for ((srg, pair) in methodsMap) {
+                append(srg).append('\t').append(pair.first).append('\t')
+                append(Base64.getEncoder().encodeToString(pair.second.toByteArray(StandardCharsets.UTF_8))).append('\n')
+            }
+            append("[params]\n")
+            for ((srg, mcp) in parameterMap) {
+                append(srg).append('\t').append(mcp).append('\n')
+            }
+        }.let {
+            tmp.writeText(it)
+        }
+        tmp.moveTo(cacheFile, StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    private fun loadMappings(cacheFile: Path) {
+        var section = ""
+        for (line in cacheFile.readLines()) {
+            when {
+                line == "[fields]" -> {
+                    section = "fields"
+                }
+
+                line == "[methods]" -> {
+                    section = "methods"
+                }
+
+                line == "[params]" -> {
+                    section = "params"
+                }
+
+                line.isEmpty() -> {}
+
+                else -> {
+                    val parts = line.split('\t')
+                    when (section) {
+                        "fields" -> {
+                            fieldsMap[parts[0]] =
+                                parts[1] to String(Base64.getDecoder().decode(parts[2]), StandardCharsets.UTF_8)
+                        }
+
+                        "methods" -> {
+                            methodsMap[parts[0]] =
+                                parts[1] to String(Base64.getDecoder().decode(parts[2]), StandardCharsets.UTF_8)
+                        }
+
+                        "params" -> {
+                            parameterMap[parts[0]] = parts[1]
+                        }
+                    }
+                }
+            }
+        }
     }
 
     var unionRelauncherVersion: String = "1.1.0"
@@ -489,13 +569,7 @@ open class FG3MinecraftTransformer(
     val sources by lazy {
         val forgeUniversal = parent.forge.dependencies.last()
         val cacheDir = cacheDir.resolve("sources")
-        forgeSource.toPath().forEachInZip { name, stream ->
-            if (name.startsWith("patches")) return@forEachInZip
-            val path = cacheDir.resolve(name).createParentDirectories()
-            path.outputStream().use {
-                stream.copyTo(it)
-            }
-        }
+        extractZipIfChanged(forgeSource.toPath(), cacheDir) { name -> !name.startsWith("patches") }
         cacheDir
     }
 
@@ -503,13 +577,8 @@ open class FG3MinecraftTransformer(
         val value = userdevCfg["ats"].asString
         val forgeUniversal = parent.forge.dependencies.last()
         cacheDir.createDirectories()
-        forgeUd.toPath().forEachInZip { name, stream ->
-            if (name.startsWith(value)) {
-                val path = cacheDir.resolve(name).createParentDirectories()
-                path.outputStream().use {
-                    stream.copyTo(it)
-                }
-            }
+        extractZipIfChanged(forgeUd.toPath(), cacheDir, markerName = ".ats-extracted") { name ->
+            name.startsWith(value)
         }
         val f = cacheDir.resolve(value)
         if (f.isDirectory()) {
@@ -517,6 +586,34 @@ open class FG3MinecraftTransformer(
         } else {
             listOf(f)
         }
+    }
+
+    /**
+     * Idempotent zip extraction: skips the work when a sidecar marker matching the current zip
+     * content hash already exists inside [destDir]. The marker is written tmp+atomic-move so a
+     * concurrent build never sees a half-written marker (worst case it re-extracts, which is safe).
+     */
+    private fun extractZipIfChanged(
+        jar: Path,
+        destDir: Path,
+        markerName: String = ".marker",
+        filter: (String) -> Boolean = { true },
+    ) {
+        val marker = destDir.resolve(markerName)
+        val jarHash = sha256Hex(jar)
+        if (destDir.exists() && marker.exists() && marker.readText() == jarHash) return
+        destDir.createDirectories()
+        jar.forEachInZip { name, stream ->
+            if (filter(name)) {
+                val path = destDir.resolve(name).createParentDirectories()
+                path.outputStream().use {
+                    stream.copyTo(it)
+                }
+            }
+        }
+        val tmp = marker.resolveSibling("$markerName.tmp")
+        tmp.writeText(jarHash)
+        tmp.moveTo(marker, StandardCopyOption.REPLACE_EXISTING)
     }
 
     override fun beforeMappingsResolve() {
@@ -598,6 +695,9 @@ open class FG3MinecraftTransformer(
         outputPath: Path,
     ) {
         val output = mcpConfigRunner.getResultFor(step).output ?: error("No output for $step")
+        // skip the copy when the target already holds identical bytes (common: mcp_config step
+        // cache hits produce the same artifact every build)
+        if (outputPath.exists() && Files.mismatch(output, outputPath) == -1L) return
         Files.copy(output, outputPath, StandardCopyOption.REPLACE_EXISTING)
     }
 
@@ -1244,6 +1344,7 @@ open class FG3MinecraftTransformer(
                 } else {
                     Files.copy(temp2, outputPath, StandardCopyOption.REPLACE_EXISTING)
                 }
+                pruneLegacyIntermediates(outputPath.parent, outputPath.nameWithoutExtension)
                 /*
                 provider.sourceProvider.sourceRemapper.remap(
                     mapOf(temp to outputPath),
@@ -1715,6 +1816,43 @@ open class FG3MinecraftTransformer(
             }
         } catch (e: Exception) {
             project.logger.info("Failed to prune sources-cache: {}", e.message)
+        }
+    }
+
+    /**
+     * Remove stale private-step intermediates from the mcDevFile directory (shared across
+     * projects using the same mcp_config, so this is bounded to the newest few). Old-chain
+     * files that are no longer produced (-searge-at/javadoc/remapped.jar) are removed outright;
+     * the forgePatch output temp (-searge.jar) of other mcDevFile hashes is kept to the newest
+     * [keep] by last-modified. Deleted files are cheap to regenerate, correctness is unaffected.
+     */
+    private fun pruneLegacyIntermediates(
+        dir: Path,
+        currentPrefix: String,
+        keep: Int = 5,
+    ) {
+        try {
+            val staleTemps = mutableListOf<Pair<Path, Long>>()
+            for (f in dir.listDirectoryEntries()) {
+                val name = f.name
+                when {
+                    name.endsWith("-searge-at.jar") ||
+                        name.endsWith("-searge-javadoc.jar") ||
+                        name.endsWith("-searge-remapped.jar") -> {
+                        Files.deleteIfExists(f)
+                    }
+
+                    name.endsWith("-searge.jar") && !name.startsWith(currentPrefix) -> {
+                        staleTemps.add(f to f.toFile().lastModified())
+                    }
+                }
+            }
+            val keepNewest = staleTemps.sortedByDescending { it.second }
+            for ((f, _) in keepNewest.drop(keep)) {
+                Files.deleteIfExists(f)
+            }
+        } catch (e: Exception) {
+            project.logger.info("Failed to prune legacy intermediates: {}", e.message)
         }
     }
 
