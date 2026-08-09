@@ -1089,10 +1089,6 @@ open class FG3MinecraftTransformer(
         }
     }
 
-    override fun applyExtraLaunches() {
-        super.applyExtraLaunches()
-    }
-
     override fun afterRemap(baseMinecraft: MinecraftJar): MinecraftJar = applyAsmTransforms(fixForge(baseMinecraft))
 
     private fun addIncludeToMetadata(
@@ -1299,7 +1295,7 @@ open class FG3MinecraftTransformer(
                     type.asClassOrInterfaceDeclaration().fields.forEach { field ->
                         val firstVar = field.variables.first()
                         if (fieldsMap[firstVar.name.asString()] != null) {
-                            if (!fieldsMap[firstVar.name.asString()]!!.second.isEmpty()) {
+                            if (fieldsMap[firstVar.name.asString()]!!.second.isNotEmpty()) {
                                 try {
                                     field.setJavadocComment(fieldsMap[firstVar.name.asString()]!!.second)
                                 } catch (e: Exception) {
