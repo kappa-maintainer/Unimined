@@ -11,7 +11,7 @@ base {
 }
 
 // this is just here so we can test the outputs easier and clean between tests
-unimined.useGlobalCache = false
+unimined.useGlobalCache = true
 
 java {
     toolchain {
@@ -41,7 +41,7 @@ unimined.minecraft {
     }
 
     cleanroom {
-        loader "0.3.0-alpha"
+        loader "0.6.8-alpha"
     }
 }
 

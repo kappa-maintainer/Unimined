@@ -17,9 +17,6 @@ import com.google.gson.JsonParser
 import kotlinx.coroutines.runBlocking
 import net.minecraftforge.binarypatcher.ConsoleTool
 import org.apache.commons.compress.archivers.jar.JarArchiveEntry
-import org.objectweb.asm.ClassReader
-import org.objectweb.asm.ClassWriter
-import org.objectweb.asm.tree.ClassNode
 import org.apache.commons.compress.archivers.jar.JarArchiveOutputStream
 import org.apache.commons.io.IOUtils
 import org.apache.commons.io.output.NullOutputStream
@@ -31,6 +28,9 @@ import org.gradle.api.file.FileCollection
 import org.gradle.api.logging.LogLevel
 import org.jetbrains.annotations.ApiStatus
 import org.jetbrains.annotations.VisibleForTesting
+import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.tree.ClassNode
 import org.objectweb.asm.tree.FieldInsnNode
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftJar
 import xyz.wagyourtail.unimined.api.minecraft.task.AbstractRemapJarTask
@@ -62,12 +62,15 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import kotlin.io.path.*
 
-open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecraftTransformer) :
-    JarModMinecraftTransformer(
-        project, parent.provider, jarModProvider = "forge", providerName = "${parent.providerName}-FG3"
+open class FG3MinecraftTransformer(
+    project: Project,
+    val parent: ForgeLikeMinecraftTransformer,
+) : JarModMinecraftTransformer(
+        project,
+        parent.provider,
+        jarModProvider = "forge",
+        providerName = "${parent.providerName}-FG3",
     ) {
-
-
     val isModernNeo by lazy {
         parent is NeoForgedMinecraftTransformer && !provider.obfuscated
     }
@@ -78,7 +81,9 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
 
     val cacheDir by lazy {
         val forgeUniversal = parent.forge.dependencies.last()
-        provider.minecraftData.mcVersionFolder.resolve(providerName).resolve(forgeUniversal.version!!)
+        provider.minecraftData.mcVersionFolder
+            .resolve(providerName)
+            .resolve(forgeUniversal.version!!)
     }
 
     val useUnionRelauncher by lazy {
@@ -88,63 +93,82 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
             false
         }
     }
-    
+
     val shouldAT by lazy { parent.accessTransformer != null && parent.accessTransformer!!.exists() && parent.accessTransformer!!.isFile }
-    val atMap: ArrayListMultimap<String, Modifier> by lazy {
-        if (shouldAT) {
-            val output = ArrayListMultimap.create<String, Modifier>()
-            parent.accessTransformer!!.readLines(StandardCharsets.UTF_8).forEach {
-                val line = Iterables.getFirst(Splitter.on('#').limit(2).split(it), "").trim()
-                if (!line.isEmpty()) {
-                    val parts = Lists.newArrayList(Splitter.on(" ").trimResults().split(line))
-                    var modifyClass = false
-                    var name = ""
-                    var desc = ""
-                    var modifyFinal = false
-                    if (parts.size < 4) {
-                        if (parts.size == 2) {
-                            modifyClass = true
+
+    private fun parseAtFile(atFile: File): ArrayListMultimap<String, Modifier> {
+        val output = ArrayListMultimap.create<String, Modifier>()
+        atFile.readLines(StandardCharsets.UTF_8).forEach {
+            val line = Iterables.getFirst(Splitter.on('#').limit(2).split(it), "").trim()
+            if (!line.isEmpty()) {
+                val parts = Lists.newArrayList(Splitter.on(" ").trimResults().split(line))
+                var modifyClass = false
+                var name = ""
+                var desc = ""
+                var modifyFinal = false
+                if (parts.size < 4) {
+                    if (parts.size == 2) {
+                        modifyClass = true
+                    } else {
+                        val nameReference = parts[2]
+                        val parenIdx = nameReference.indexOf('(')
+                        if (parenIdx > 0) {
+                            desc = nameReference.substring(parenIdx)
+                            name = nameReference.take(parenIdx)
                         } else {
-                            val nameReference = parts[2]
-                            val parenIdx = nameReference.indexOf('(')
-                            if (parenIdx > 0) {
-                                desc = nameReference.substring(parenIdx)
-                                name = nameReference.take(parenIdx)
-                            } else {
-                                name = nameReference
-                            }
+                            name = nameReference
                         }
-                        val className = parts[1].replace('/', '.')
-                        if (parts[0].endsWith("-f")) {
-                            modifyFinal = true
-                        }
-                        output.put(className, Modifier(modifyClass, name, desc, modifyFinal))
                     }
+                    val className = parts[1].replace('/', '.')
+                    if (parts[0].endsWith("-f")) {
+                        modifyFinal = true
+                    }
+                    output.put(className, Modifier(modifyClass, name, desc, modifyFinal))
                 }
             }
-            output
+        }
+        return output
+    }
+
+    /**
+     * Builtin loader ATs extracted from the userdev jar (srg-named, e.g. forge_at.cfg).
+     * Applied to the srg-named sources before remap, replacing the old bytecode-level
+     * applyAts step that used to run before decompile.
+     */
+    val builtinAtMap: ArrayListMultimap<String, Modifier> by lazy {
+        val output = ArrayListMultimap.create<String, Modifier>()
+        for (atFile in ats) {
+            output.putAll(parseAtFile(atFile.toFile()))
+        }
+        output
+    }
+
+    /** User AT (mcp-named, applied to the remapped sources). */
+    val atMap: ArrayListMultimap<String, Modifier> by lazy {
+        if (shouldAT) {
+            parseAtFile(parent.accessTransformer!!)
         } else {
             ArrayListMultimap.create<String, Modifier>()
         }
     }
-    
-    val mcpFile by lazy { 
-        var stable39 : File? = null
+
+    val mcpFile by lazy {
+        var stable39: File? = null
         val mapping = provider.mappings.mappings
         mapping.dependencies.forEach { dependency ->
-            if ( dependency.group == "de.oceanlabs.mcp" && dependency.name == "mcp_stable" || dependency.name == "mcp_snapshot") {
+            if (dependency.group == "de.oceanlabs.mcp" && dependency.name == "mcp_stable" || dependency.name == "mcp_snapshot") {
                 project.logger.info("Found mcp {}", dependency)
                 stable39 = mapping.getFiles(dependency, "zip").singleFile
             }
         }
         stable39
     }
-    
+
     val fieldsMap = mutableMapOf<String, Pair<String, String>>()
     val methodsMap = mutableMapOf<String, Pair<String, String>>()
     val parameterMap = mutableMapOf<String, String>()
     var created = false
-    
+
     private fun intiMapping() {
         if (created) return
         val zip = ZipFile(mcpFile!!)
@@ -167,8 +191,8 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                                 }
                             }
                         }
-
                     }
+
                     "methods.csv" -> {
                         val fileContent = zip.getInputStream(fileName)
                         fileContent.bufferedReader(StandardCharsets.UTF_8).use { input ->
@@ -186,6 +210,7 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                             }
                         }
                     }
+
                     "params.csv" -> {
                         val fileContent = zip.getInputStream(fileName)
                         fileContent.bufferedReader(StandardCharsets.UTF_8).use { input ->
@@ -193,7 +218,6 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                                 if (line.startsWith("searge") || line.startsWith("param") || line.isEmpty()) continue
                                 val values = line!!.split(',', limit = 4)
                                 parameterMap[values[0]] = values[1]
-                                
                             }
                         }
                     }
@@ -208,11 +232,12 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
     init {
         project.logger.lifecycle("[Unimined/Forge] Using FG3 transformer")
         parent.provider.minecraftRemapper.addResourceRemapper { a, b -> JsCoreModRemapper(project.logger) }
-        val forgeHardcodedNames = setOf(
-            "net/minecraftforge/registries/ObjectHolderRegistry",
-            "net/minecraftforge/fml/common/registry/ObjectHolderRegistry",
-            "net/neoforged/neoforge/registries/ObjectHolderRegistry"
-        )
+        val forgeHardcodedNames =
+            setOf(
+                "net/minecraftforge/registries/ObjectHolderRegistry",
+                "net/minecraftforge/fml/common/registry/ObjectHolderRegistry",
+                "net/neoforged/neoforge/registries/ObjectHolderRegistry",
+            )
         parent.provider.minecraftRemapper.addExtension {
             StringClassNameRemapExtension(project.logger) {
 //            it.matches(Regex("^net/minecraftforge/.*"))
@@ -234,7 +259,7 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         if (!provider.obfuscated) return provider.mappings.checkedNs("official")
         return if (userdevCfg["mcp"].asString.contains("neoform") || provider.minecraftData.mcVersionCompare(
                 provider.version,
-                "1.20.5"
+                "1.20.5",
             ) >= 0
         ) {
             provider.mappings.checkedNs("mojmap")
@@ -249,35 +274,40 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
     override val merger: ClassMerger
         get() = throw UnsupportedOperationException("FG3+ does not support merging with unofficial merger.")
 
-    override val transform: MutableList<(FileSystem) -> Unit> = (
+    override val transform: MutableList<(FileSystem) -> Unit> =
+        (
             if (parent.provider.version == "1.12.2") {
                 listOf(
                     FixFG2Coremods::fixCoremods,
                     FixFG2ResourceLoading::fixResourceLoading,
-                    FixFG2DeobfEnvironment::fixDeobfEnvironment
+                    FixFG2DeobfEnvironment::fixDeobfEnvironment,
                 )
             } else {
                 emptyList()
             } +
-                    super.transform
-            ).toMutableList()
-
+                super.transform
+        ).toMutableList()
 
     @ApiStatus.Internal
-    val clientExtra = project.configurations.maybeCreate("clientExtra".withSourceSet(provider.sourceSet)).also {
-        provider.minecraft.extendsFrom(it)
-    }
+    val clientExtra =
+        project.configurations.maybeCreate("clientExtra".withSourceSet(provider.sourceSet)).also {
+            provider.minecraft.extendsFrom(it)
+        }
 
     val mcpConfig: Dependency by lazy {
         project.dependencies.create(
-            userdevCfg["mcp"]?.asString ?: "de.oceanlabs.mcp:mcp_config:${provider.version}@zip"
+            userdevCfg["mcp"]?.asString ?: "de.oceanlabs.mcp:mcp_config:${provider.version}@zip",
         )
     }
 
     open val obfNamespace by lazy {
-        if (userdevCfg["notchObf"]?.asBoolean == true || !provider.obfuscated) "official"
-        else if (userdevCfg["mcp"].asString.contains("neoform")) "mojmap"
-        else "searge"
+        if (userdevCfg["notchObf"]?.asBoolean == true || !provider.obfuscated) {
+            "official"
+        } else if (userdevCfg["mcp"].asString.contains("neoform")) {
+            "mojmap"
+        } else {
+            "searge"
+        }
     }
 
     val mcpConfigFile by lazy {
@@ -290,97 +320,120 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
     val mcpConfigRunner by lazy {
         MCPConfig(
             mcpConfigFile.toPath(),
-            provider.minecraftData.mcVersionFolder.resolve(providerName).resolve("mcp_config.${mcpConfig.version}"),
+            provider.minecraftData.mcVersionFolder
+                .resolve(providerName)
+                .resolve("mcp_config.${mcpConfig.version}"),
             provider,
-            project
+            project,
         ).also { config ->
 
-            config.insertBefore("decompile", config.FileProviderStep("applyAts", null, mutableMapOf()) {
-                val input = Paths.get(variables.getValue("input").invoke())
-                val output = it.resolve("applyAtsOutput.jar")
-                parent.transform(project, ats, input, output)
-                output
-            }, mapOf("input" to {
-                config.getResultFor("applyAts").output!!.absolutePathString()
-            }))
-
+            // ATs are no longer applied to the jar before decompile, so the decompile output
+            // (and everything after it up to forgePatch) is AT-independent and can be shared
+            // across projects using the same MC + loader version but different ATs.
+            // The builtin (srg-named) ATs are applied to the srg-named sources at the end of
+            // createSourcesJar instead, and user (mcp-named) ATs are applied after remap.
             config.insertBefore(
-                "applyAts",
+                "decompile",
                 config.UpdateCacheDir("updateCacheDir", null, cacheDir.createDirectories()),
-                mapOf()
+                mapOf(),
             )
 
             config.addStep(
                 config.InjectStep(
-                    "forgeInject", "patch", mutableMapOf(
-                "input" to {
-                    config.getResultFor("patch").output!!.absolutePathString()
-                },
-                "inject" to {
-                    sources.absolutePathString()
-                }
-            )))
+                    "forgeInject",
+                    "patch",
+                    mutableMapOf(
+                        "input" to {
+                            config.getResultFor("patch").output!!.absolutePathString()
+                        },
+                        "inject" to {
+                            sources.absolutePathString()
+                        },
+                    ),
+                ),
+            )
 
             if (userdevCfg["notchObf"]?.asBoolean == true) {
                 config.insertBefore(
-                    "forgeInject", config.FunctionStep(
-                        "mcpCleanup", null, mutableMapOf(), MCPConfig.Function(
+                    "forgeInject",
+                    config.FunctionStep(
+                        "mcpCleanup",
+                        null,
+                        mutableMapOf(),
+                        MCPConfig.Function(
                             listOf("net.minecraftforge:mcpcleanup:2.3.6"),
                             null,
                             listOf(
                                 "--input",
                                 "{input}",
                                 "--output",
-                                "{output}"
+                                "{output}",
                             ),
                             listOf(),
-                            null
-                        )
+                            null,
+                        ),
                     ),
-                    mapOf("input" to {
-                        config.getResultFor("mcpCleanup").output!!.absolutePathString()
-                    })
+                    mapOf(
+                        "input" to {
+                            config.getResultFor("mcpCleanup").output!!.absolutePathString()
+                        },
+                    ),
                 )
             }
 
             config.addStep(
                 config.PatchStep(
-                "forgePatch", "forgeInject", mutableMapOf(
-                "input" to {
-                    config.getResultFor("forgeInject").output!!.absolutePathString()
-                },
-                "patches" to {
-                    val origin = userdevCfg["patchesOriginalPrefix"]?.asString ?: "a"
-                    val modified = userdevCfg["patchesModifiedPrefix"]?.asString ?: "b"
-                    if (origin != "a" || modified != "b") {
-                        val output = cacheDir.resolve("forgePatches.jar")
-                        JarArchiveOutputStream(output.outputStream()).use { out ->
-                            forgeUd.toPath().forEachInZip { s, input ->
-                                if (s.endsWith(".patch")) {
-                                    out.putArchiveEntry(JarArchiveEntry(s))
-                                    val text = input.readBytes().toString(StandardCharsets.UTF_8).lines().map {
-                                        if (it.startsWith("--- $origin")) {
-                                            "--- a/" + it.removePrefix("--- $origin")
-                                        } else if (it.startsWith("+++ $modified")) {
-                                            "+++ b/" + it.removePrefix("+++ $modified")
-                                        } else {
-                                            it
+                    "forgePatch",
+                    "forgeInject",
+                    mutableMapOf(
+                        "input" to {
+                            config.getResultFor("forgeInject").output!!.absolutePathString()
+                        },
+                        "patches" to {
+                            val origin = userdevCfg["patchesOriginalPrefix"]?.asString ?: "a"
+                            val modified = userdevCfg["patchesModifiedPrefix"]?.asString ?: "b"
+                            if (origin != "a" || modified != "b") {
+                                val output = cacheDir.resolve("forgePatches.jar")
+                                // only repack when the userdev jar changed; the repacked jar is part of the
+                                // forgePatch step fingerprint, so it must be byte-stable across builds
+                                if (!output.exists()) {
+                                    JarArchiveOutputStream(output.outputStream()).use { out ->
+                                        forgeUd.toPath().forEachInZip { s, input ->
+                                            if (s.endsWith(".patch")) {
+                                                val entry = JarArchiveEntry(s)
+                                                entry.time = 0L
+                                                out.putArchiveEntry(entry)
+                                                val text =
+                                                    input
+                                                        .readBytes()
+                                                        .toString(StandardCharsets.UTF_8)
+                                                        .lines()
+                                                        .map {
+                                                            if (it.startsWith("--- $origin")) {
+                                                                "--- a/" + it.removePrefix("--- $origin")
+                                                            } else if (it.startsWith("+++ $modified")) {
+                                                                "+++ b/" + it.removePrefix("+++ $modified")
+                                                            } else {
+                                                                it
+                                                            }
+                                                        }.joinToString("\n") + "\n"
+                                                out.write(text.toByteArray(StandardCharsets.UTF_8))
+                                                out.closeArchiveEntry()
+                                            }
                                         }
-                                    }.joinToString("\n") + "\n"
-                                    out.write(text.toByteArray(StandardCharsets.UTF_8))
-                                    out.closeArchiveEntry()
+                                    }
                                 }
+                                output.absolutePathString()
+                            } else {
+                                forgeUd.absolutePath
                             }
-                        }
-                        output.absolutePathString()
-                    } else {
-                        forgeUd.absolutePath
-                    }
-                },
-                "prefix" to {
-                    userdevCfg["patches"].asString
-                }
-            )))
+                        },
+                        "prefix" to {
+                            userdevCfg["patches"].asString
+                        },
+                    ),
+                ),
+            )
         }
     }
 
@@ -391,7 +444,8 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         //   read if forgeDep has binpatches file
         val forgeUni = parent.forge.getFiles(forgeDep).singleFile
         forgeUni.toPath().readZipInputStreamFor<String?>(
-            "binpatches.pack.lzma", false
+            "binpatches.pack.lzma",
+            false,
         ) {
             "userdev3"
         } ?: "userdev"
@@ -403,9 +457,11 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         val userdev = "${forgeDep.group}:${forgeDep.name}:${forgeDep.version}:$userdevClassifier"
 
         val forgeUd = project.configurations.detachedConfiguration()
-        forgeUd.dependencies.add(project.dependencies.create(userdev).apply {
-            (this as ExternalDependency).isTransitive = false
-        })
+        forgeUd.dependencies.add(
+            project.dependencies.create(userdev).apply {
+                (this as ExternalDependency).isTransitive = false
+            },
+        )
 
         // get forge userdev jar
         forgeUd.getFiles(forgeUd.dependencies.last()).singleFile
@@ -417,9 +473,11 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         val source = "${forgeDep.group}:${forgeDep.name}:${forgeDep.version}:sources"
 
         val forgeSource = project.configurations.detachedConfiguration()
-        forgeSource.dependencies.add(project.dependencies.create(source).apply {
-            (this as ExternalDependency).isTransitive = false
-        })
+        forgeSource.dependencies.add(
+            project.dependencies.create(source).apply {
+                (this as ExternalDependency).isTransitive = false
+            },
+        )
 
         // get forge source jar
         forgeSource.getFiles(forgeSource.dependencies.last()).singleFile
@@ -467,7 +525,9 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
             } else {
                 val mcpConfigUserSpecified = entries.keys.contains("searge")
                 if (mcpConfigUserSpecified && !parent.customSearge) {
-                    project.logger.warn("[Unimined/ForgeTransformer] FG3 does not support custom mcp_config (searge) version specification. Using ${mcpConfig.version} from userdev.")
+                    project.logger.warn(
+                        "[Unimined/ForgeTransformer] FG3 does not support custom mcp_config (searge) version specification. Using ${mcpConfig.version} from userdev.",
+                    )
                 }
                 if (!parent.customSearge) searge(mcpConfig.version!!)
             }
@@ -489,7 +549,9 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         }
 
         if (useUnionRelauncher) {
-            provider.minecraftLibraries.dependencies.add(project.dependencies.create("io.github.juuxel:union-relauncher:$unionRelauncherVersion"))
+            provider.minecraftLibraries.dependencies.add(
+                project.dependencies.create("io.github.juuxel:union-relauncher:$unionRelauncherVersion"),
+            )
         }
 
         if (userdevCfg.has("inject")) {
@@ -512,7 +574,7 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                 project.logger.info("[Unimined/ForgeTransformer] Inserting mcp mappings")
                 if (obfNamespace != "mojmap" && provider.obfuscated) {
                     provider.minecraftLibraries.dependencies.add(
-                        project.dependencies.create(project.files(parent.srgToMCPAsMCP))
+                        project.dependencies.create(project.files(parent.srgToMCPAsMCP)),
                     )
                 }
             }
@@ -528,12 +590,18 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
     }
 
     @Throws(IOException::class)
-    private fun executeMcp(step: String, outputPath: Path) {
+    private fun executeMcp(
+        step: String,
+        outputPath: Path,
+    ) {
         val output = mcpConfigRunner.getResultFor(step).output ?: error("No output for $step")
         Files.copy(output, outputPath, StandardCopyOption.REPLACE_EXISTING)
     }
 
-    override fun mergedJar(clientjar: MinecraftJar, serverjar: MinecraftJar): MinecraftJar {
+    override fun mergedJar(
+        clientjar: MinecraftJar,
+        serverjar: MinecraftJar,
+    ): MinecraftJar {
         val forgeUniversal = parent.forge.dependencies.last()
 
         return MinecraftJar(
@@ -544,7 +612,10 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         )
     }
 
-    override fun merge(clientjar: MinecraftJar, serverjar: MinecraftJar): MinecraftJar {
+    override fun merge(
+        clientjar: MinecraftJar,
+        serverjar: MinecraftJar,
+    ): MinecraftJar {
         project.logger.lifecycle("Merging client and server jars...")
         val output = mergedJar(clientjar, serverjar)
         createClientExtra(clientjar, serverjar, output.path)
@@ -565,16 +636,18 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         baseMinecraftClient: MinecraftJar,
         @Suppress("UNUSED_PARAMETER")
         baseMinecraftServer: MinecraftJar?,
-        patchedMinecraft: Path
+        patchedMinecraft: Path,
     ) {
-        val clientExtra = patchedMinecraft.parent.createDirectories()
-            .resolve("client-extra-${provider.version}.jar")
+        val clientExtra =
+            patchedMinecraft.parent
+                .createDirectories()
+                .resolve("client-extra-${provider.version}.jar")
 
         if (this.clientExtra.dependencies.isEmpty()) {
             this.clientExtra.dependencies.add(
                 project.dependencies.create(
-                    project.files(clientExtra.toString())
-                )
+                    project.files(clientExtra.toString()),
+                ),
             )
         }
 
@@ -605,7 +678,11 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         }
     }
 
-    protected open fun writeClientExtraManifest(manifestFile: Path, baseMinecraftClient: MinecraftJar, baseMinecraftServer: MinecraftJar?) {
+    protected open fun writeClientExtraManifest(
+        manifestFile: Path,
+        baseMinecraftClient: MinecraftJar,
+        baseMinecraftServer: MinecraftJar?,
+    ) {
     }
 
     override fun transform(minecraft: MinecraftJar): MinecraftJar {
@@ -616,82 +693,102 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
 
         val outFolder = cacheDir.createDirectories()
 
-        val inputMC = if (minecraft.envType != EnvType.JOINED) {
-            // if userdev cfg says notch
-            if (userdevCfg["notchObf"]?.asBoolean == true) {
-                throw IllegalStateException("Forge userdev3 (legacy fg3, aka 1.12.2) is not supported for non-combined environments currently.")
-            }
-            // run mcp_config to rename
-            val output = MinecraftJar(
-                minecraft,
-                parentPath = outFolder,
-                mappingNamespace = provider.mappings.checkedNs(obfNamespace),
-                patches = minecraft.patches + "mcp_config"
-            )
-            if (minecraft.envType == EnvType.CLIENT) {
-                createClientExtra(minecraft, null, output.path)
-            }
-            if (!output.path.exists() || project.unimined.forceReload) {
-                executeMcp("rename", output.path)
-            }
-            output
-        } else {
-            minecraft
-        }
-
-        val patchedMC = MinecraftJar(
-            inputMC,
-            name = if (parent is NeoForgedMinecraftTransformer && parent.provider.minecraftData.mcVersionCompare(
-                    provider.version,
-                    "1.20.1"
-                ) != 0
-            ) "neoforge" else "forge",
-            version = forgeUniversal.version!!,
-            parentPath = outFolder
-        )
-
-        //  extract binpatches
-        val binPatchFile = this.binpatchFile ?: if (patchedMC.envType == EnvType.JOINED) {
-            forgeUd.toPath().readZipInputStreamFor(userdevCfg["binpatches"].asString) {
-                outFolder.resolve("binpatches-joined.lzma").apply {
-                    writeBytes(
-                        it.readBytes(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING
+        val inputMC =
+            if (minecraft.envType != EnvType.JOINED) {
+                // if userdev cfg says notch
+                if (userdevCfg["notchObf"]?.asBoolean == true) {
+                    throw IllegalStateException(
+                        "Forge userdev3 (legacy fg3, aka 1.12.2) is not supported for non-combined environments currently.",
                     )
                 }
+                // run mcp_config to rename
+                val output =
+                    MinecraftJar(
+                        minecraft,
+                        parentPath = outFolder,
+                        mappingNamespace = provider.mappings.checkedNs(obfNamespace),
+                        patches = minecraft.patches + "mcp_config",
+                    )
+                if (minecraft.envType == EnvType.CLIENT) {
+                    createClientExtra(minecraft, null, output.path)
+                }
+                if (!output.path.exists() || project.unimined.forceReload) {
+                    executeMcp("rename", output.path)
+                }
+                output
+            } else {
+                minecraft
             }
-        } else {
-            // get from forge installer
-            project.configurations.detachedConfiguration(
-                project.dependencies.create(
-                    "${forgeUniversal.group}:${forgeUniversal.name}:${forgeUniversal.version}:installer"
-                )
+
+        val patchedMC =
+            MinecraftJar(
+                inputMC,
+                name =
+                    if (parent is NeoForgedMinecraftTransformer && parent.provider.minecraftData.mcVersionCompare(
+                            provider.version,
+                            "1.20.1",
+                        ) != 0
+                    ) {
+                        "neoforge"
+                    } else {
+                        "forge"
+                    },
+                version = forgeUniversal.version!!,
+                parentPath = outFolder,
             )
-                .resolve()
-                .first { it.extension == "jar" }
-                .toPath()
-                .readZipInputStreamFor("data/${patchedMC.envType.classifier}.lzma") {
-                    outFolder.resolve("binpatches-${patchedMC.envType.classifier}.lzma").apply {
+
+        //  extract binpatches
+        val binPatchFile =
+            this.binpatchFile ?: if (patchedMC.envType == EnvType.JOINED) {
+                forgeUd.toPath().readZipInputStreamFor(userdevCfg["binpatches"].asString) {
+                    outFolder.resolve("binpatches-joined.lzma").apply {
                         writeBytes(
-                            it.readBytes(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING
+                            it.readBytes(),
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING,
                         )
                     }
                 }
-        }
-
+            } else {
+                // get from forge installer
+                project.configurations
+                    .detachedConfiguration(
+                        project.dependencies.create(
+                            "${forgeUniversal.group}:${forgeUniversal.name}:${forgeUniversal.version}:installer",
+                        ),
+                    ).resolve()
+                    .first { it.extension == "jar" }
+                    .toPath()
+                    .readZipInputStreamFor("data/${patchedMC.envType.classifier}.lzma") {
+                        outFolder.resolve("binpatches-${patchedMC.envType.classifier}.lzma").apply {
+                            writeBytes(
+                                it.readBytes(),
+                                StandardOpenOption.CREATE,
+                                StandardOpenOption.TRUNCATE_EXISTING,
+                            )
+                        }
+                    }
+            }
 
         if (!patchedMC.path.exists() || project.unimined.forceReload) {
             patchedMC.path.deleteIfExists()
             val additionalArgs = listOf("--data", "--unpatched")
-            val isModernNeo = (provider.minecraftData.mcVersionCompare("1.21.9", provider.version) == -1 && parent.providerName.equals("NeoForged", true))
+            val isModernNeo = (
+                provider.minecraftData.mcVersionCompare("1.21.9", provider.version) == -1 &&
+                    parent.providerName.equals("NeoForged", true)
+            )
 
-            val args = (userdevCfg["binpatcher"].asJsonObject["args"].asJsonArray.map {
-                when (it.asString) {
-                    "{clean}" -> inputMC.path.toString()
-                    "{patch}" -> binPatchFile.toString()
-                    "{output}" -> patchedMC.path.toString()
-                    else -> it.asString
-                }
-            } + if (isModernNeo) listOf() else additionalArgs).toTypedArray()
+            val args =
+                (
+                    userdevCfg["binpatcher"].asJsonObject["args"].asJsonArray.map {
+                        when (it.asString) {
+                            "{clean}" -> inputMC.path.toString()
+                            "{patch}" -> binPatchFile.toString()
+                            "{output}" -> patchedMC.path.toString()
+                            else -> it.asString
+                        }
+                    } + if (isModernNeo) listOf() else additionalArgs
+                ).toTypedArray()
             val stoutLevel = project.gradle.startParameter.logLevel
             val stdout = System.out
             if (stoutLevel > LogLevel.INFO) {
@@ -700,7 +797,8 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
             project.logger.info("Running binpatcher with args: ${args.joinToString(" ")}")
             try {
                 if (isModernNeo) {
-                    net.neoforged.binarypatcher.ConsoleTool.main(args)
+                    net.neoforged.binarypatcher.ConsoleTool
+                        .main(args)
                 } else {
                     ConsoleTool.main(args)
                 }
@@ -732,28 +830,30 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
             shadedForge
         }
     }
-    
+
     /**
      * Patch things that fixed in mcp patch but not the class bytes
      */
     protected open fun applyAsmTransforms(minecraft: MinecraftJar): MinecraftJar {
-        
-        val target = MinecraftJar(
-            minecraft,
-            patches = minecraft.patches + "asmFixes"
-        )
-        
+        val target =
+            MinecraftJar(
+                minecraft,
+                patches = minecraft.patches + "asmFixes",
+            )
+
         if (target.path.exists() && !project.unimined.forceReload) {
             return target
         }
-        
+
         project.logger.lifecycle("[Unimined/Forge] Applying ASM transforms to fix additional issues...")
-        
+
         Files.copy(minecraft.path, target.path, StandardCopyOption.REPLACE_EXISTING)
-        
+
         try {
             target.path.openZipFileSystem(mapOf("mutable" to true)).use { fs ->
-                for (classFile in fs.getPath("/").walk()
+                for (classFile in fs
+                    .getPath("/")
+                    .walk()
                     .filter { it.toString().endsWith(".class") }) {
                     project.logger.info(classFile.fileName.toString())
                     try {
@@ -767,20 +867,22 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                                 val field = classNode.fields.find { it.name == "b" }
                                 if (field != null) {
                                     field.name = "HASH"
-                                    classNode.methods.forEach { it.instructions
-                                        .filterIsInstance<FieldInsnNode>()
-                                        .forEach { fieldInsnNode ->
-                                            if (fieldInsnNode.name.equals("b")) {
-                                                fieldInsnNode.name = "HASH"
+                                    classNode.methods.forEach {
+                                        it.instructions
+                                            .filterIsInstance<FieldInsnNode>()
+                                            .forEach { fieldInsnNode ->
+                                                if (fieldInsnNode.name.equals("b")) {
+                                                    fieldInsnNode.name = "HASH"
+                                                }
                                             }
-                                        }
                                     }
-                                    
+
                                     val classWriter = ClassWriter(0)
                                     classNode.accept(classWriter)
                                     classFile.outputStream().use { it.write(classWriter.toByteArray()) }
                                 }
                             }
+
                             "IObjectIntIterable.class" -> {
                                 project.logger.lifecycle("[Unimined/Forge] Patching IObjectIntIterable...")
                                 val classReader = ClassReader(classFile.inputStream().readBytes())
@@ -798,7 +900,7 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                         project.logger.debug(
                             "[Unimined/Forge/ASM] Failed to transform {}: {}",
                             classFile.fileName,
-                            e.message
+                            e.message,
                         )
                     }
                 }
@@ -807,17 +909,20 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
             target.path.deleteIfExists()
             throw e
         }
-        
+
         return target
     }
 
     private fun removeMinecraftResourceMarkers(jarPath: Path) {
         val markers = listOf("data/.mcassetsroot", "assets/.mcassetsroot")
-        val hasAny = jarPath.openZipFileSystem().use { fs ->
-            markers.any { Files.exists(fs.getPath(it)) }
-        }
+        val hasAny =
+            jarPath.openZipFileSystem().use { fs ->
+                markers.any { Files.exists(fs.getPath(it)) }
+            }
         if (!hasAny) return
-        project.logger.info("[Unimined/ForgeTransformer] Removing Minecraft asset-root markers from ${jarPath.fileName} to fix NeoForge GameLocator conflict")
+        project.logger.info(
+            "[Unimined/ForgeTransformer] Removing Minecraft asset-root markers from ${jarPath.fileName} to fix NeoForge GameLocator conflict",
+        )
         jarPath.openZipFileSystem(mapOf("mutable" to true)).use { fs ->
             for (marker in markers) {
                 Files.deleteIfExists(fs.getPath(marker))
@@ -829,8 +934,11 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         val lcp = provider.localCache.createDirectories().resolve("legacy_classpath.txt")
         lcp.writeText(
             (provider.minecraftLibraries.files + provider.minecraftFileDev + clientExtra.resolve()).joinToString(
-                "\n"
-            ) { it.toString() }, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING
+                "\n",
+            ) { it.toString() },
+            StandardCharsets.UTF_8,
+            StandardOpenOption.CREATE,
+            StandardOpenOption.TRUNCATE_EXISTING,
         )
         lcp
     }
@@ -838,34 +946,53 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
     private fun addProperties(config: RunConfig) {
         config.properties.putAll(
             mapOf(
-            "minecraft_classpath_file" to {
-                legacyClasspath.absolutePathString()
-            },
-            "modules" to {
-                val libs =
-                    mapOf(*provider.minecraftLibraries.dependencies.map { it.group + ":" + it.name + ":" + it.version to it }
-                        .toTypedArray())
-                userdevCfg.get("modules").asJsonArray.joinToString(File.pathSeparator) {
-                    val dep = libs[it.asString.removeSuffix("@jar")]
-                        ?: throw IllegalStateException("Module ${it.asString} not found in mc libraries")
-                    provider.minecraftLibraries.getFiles(dep).singleFile.toString()
-                }
-            }
-        ))
+                "minecraft_classpath_file" to {
+                    legacyClasspath.absolutePathString()
+                },
+                "modules" to {
+                    val libs =
+                        mapOf(
+                            *provider.minecraftLibraries.dependencies
+                                .map { it.group + ":" + it.name + ":" + it.version to it }
+                                .toTypedArray(),
+                        )
+                    userdevCfg.get("modules").asJsonArray.joinToString(File.pathSeparator) {
+                        val dep =
+                            libs[it.asString.removeSuffix("@jar")]
+                                ?: throw IllegalStateException("Module ${it.asString} not found in mc libraries")
+                        provider.minecraftLibraries
+                            .getFiles(dep)
+                            .singleFile
+                            .toString()
+                    }
+                },
+            ),
+        )
     }
 
-    private fun getArgValue(arg: String): String {
-        return if (arg.startsWith("{")) {
+    private fun getArgValue(arg: String): String =
+        if (arg.startsWith("{")) {
             when (arg) {
-                "{asset_index}" -> provider.minecraftData.metadata.assetIndex?.id ?: ""
-                "{mcp_mappings}" -> "unimined.stub"
-                "{natives}" -> "\${natives_directory}"
-                else -> "\$$arg"
+                "{asset_index}" -> {
+                    provider.minecraftData.metadata.assetIndex
+                        ?.id ?: ""
+                }
+
+                "{mcp_mappings}" -> {
+                    "unimined.stub"
+                }
+
+                "{natives}" -> {
+                    "\${natives_directory}"
+                }
+
+                else -> {
+                    "\$$arg"
+                }
             }
         } else {
             arg
         }
-    }
 
     override fun applyClientRunTransform(config: RunConfig) {
         super.applyClientRunTransform(config)
@@ -876,12 +1003,13 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
             parent.groups
         }
         userdevCfg.get("runs").asJsonObject.get("client").asJsonObject.apply {
-            val mainClass = if (useUnionRelauncher) {
-                config.jvmArgs("-DunionRelauncher.mainClass=${get("main").asString}")
-                "juuxel.unionrelauncher.UnionRelauncher"
-            } else {
-                get("main").asString
-            }
+            val mainClass =
+                if (useUnionRelauncher) {
+                    config.jvmArgs("-DunionRelauncher.mainClass=${get("main").asString}")
+                    "juuxel.unionrelauncher.UnionRelauncher"
+                } else {
+                    get("main").asString
+                }
 
             parent.tweakClassClient = get("env")?.asJsonObject?.get("tweakClass")?.asString
             if (mainClass.startsWith("net.minecraftforge.legacydev")) {
@@ -890,11 +1018,11 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                 config.jvmArgs(
                     "-Dfml.deobfuscatedEnvironment=true",
                     "-Dfml.ignoreInvalidMinecraftCertificates=true",
-                    "-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${parent.srgToMCPAsSRG}"
+                    "-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${parent.srgToMCPAsSRG}",
                 )
                 config.args(
                     "--tweakClass",
-                    parent.tweakClassClient ?: "net.minecraftforge.fml.common.launcher.FMLTweaker"
+                    parent.tweakClassClient ?: "net.minecraftforge.fml.common.launcher.FMLTweaker",
                 )
                 config.environment["MOD_CLASSES"] = parent.groups
             } else {
@@ -915,7 +1043,6 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                 }
             }
         }
-
     }
 
     override fun applyServerRunTransform(config: RunConfig) {
@@ -935,11 +1062,11 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                 config.jvmArgs(
                     "-Dfml.ignoreInvalidMinecraftCertificates=true",
                     "-Dfml.deobfuscatedEnvironment=true",
-                    "-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${parent.srgToMCPAsSRG}"
+                    "-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${parent.srgToMCPAsSRG}",
                 )
                 config.args(
                     "--tweakClass",
-                    parent.tweakClassServer ?: "net.minecraftforge.fml.common.launcher.FMLServerTweaker"
+                    parent.tweakClassServer ?: "net.minecraftforge.fml.common.launcher.FMLServerTweaker",
                 )
                 config.environment["MOD_CLASSES"] = parent.groups
             } else {
@@ -966,31 +1093,47 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         super.applyExtraLaunches()
     }
 
-    override fun afterRemap(baseMinecraft: MinecraftJar): MinecraftJar {
-        return applyAsmTransforms(fixForge(baseMinecraft))
-    }
+    override fun afterRemap(baseMinecraft: MinecraftJar): MinecraftJar = applyAsmTransforms(fixForge(baseMinecraft))
 
-    private fun addIncludeToMetadata(json: JsonObject, dep: MavenCoords, path: String) {
+    private fun addIncludeToMetadata(
+        json: JsonObject,
+        dep: MavenCoords,
+        path: String,
+    ) {
         var jars = json.get("jars")?.asJsonArray
         if (jars == null) {
             jars = JsonArray()
             json.add("jars", jars)
         }
-        jars.add(JsonObject().apply {
-            add("identifier", JsonObject().apply {
-                addProperty("group", dep.group)
-                addProperty("artifact", dep.artifact)
-            })
-            add("version", JsonObject().apply {
-                addProperty("range", "[${dep.version},)")
-                addProperty("artifactVersion", dep.version)
-            })
-            addProperty("path", path)
-        })
+        jars.add(
+            JsonObject().apply {
+                add(
+                    "identifier",
+                    JsonObject().apply {
+                        addProperty("group", dep.group)
+                        addProperty("artifact", dep.artifact)
+                    },
+                )
+                add(
+                    "version",
+                    JsonObject().apply {
+                        addProperty("range", "[${dep.version},)")
+                        addProperty("artifactVersion", dep.version)
+                    },
+                )
+                addProperty("path", path)
+            },
+        )
     }
 
-    private fun doJarJar(remapJarTask: AbstractRemapJarTask, output: Path) {
-        val deps = include!!.incoming.artifacts.resolvedArtifacts.get()
+    private fun doJarJar(
+        remapJarTask: AbstractRemapJarTask,
+        output: Path,
+    ) {
+        val deps =
+            include!!
+                .incoming.artifacts.resolvedArtifacts
+                .get()
         if (deps.isEmpty()) {
             return
         }
@@ -1011,7 +1154,8 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                 try {
                     val path = jarDir.resolve(location.fileName)
                     if (!path.exists()) {
-                        dep.file.toPath()
+                        dep.file
+                            .toPath()
                             .copyTo(jarDir.resolve(location.fileName), true)
                     }
 
@@ -1029,7 +1173,10 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         }
     }
 
-    override fun afterRemapJarTask(remapJarTask: AbstractRemapJarTask, output: Path) {
+    override fun afterRemapJarTask(
+        remapJarTask: AbstractRemapJarTask,
+        output: Path,
+    ) {
         if (provider.minecraftData.mcVersionCompare(provider.version, "1.18") >= 0) {
             doJarJar(remapJarTask, output)
         }
@@ -1039,10 +1186,11 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         if (!baseMinecraft.patches.contains("fixForge") &&
             (!provider.obfuscated || baseMinecraft.mappingNamespace != provider.mappings.checkedNs("official"))
         ) {
-            val target = MinecraftJar(
-                baseMinecraft,
-                patches = baseMinecraft.patches + "fixForge",
-            )
+            val target =
+                MinecraftJar(
+                    baseMinecraft,
+                    patches = baseMinecraft.patches + "fixForge",
+                )
 
             if (target.path.exists() && !project.unimined.forceReload) {
                 return target
@@ -1068,7 +1216,7 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         patchedJar: Path,
         outputPath: Path,
         linemappedPath: Path?,
-        side: EnvType
+        side: EnvType,
     ) {
         if (side != EnvType.JOINED) {
             super.createSourcesJar(classpath, patchedJar, outputPath, linemappedPath, side)
@@ -1079,16 +1227,29 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                     outputPath.parent.resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}.jar")
                 val temp1 =
                     outputPath.parent.resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}-javadoc.jar")
-                val temp2 = if (shouldAT) {
-                    outputPath.parent.resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}-remapped.jar")
-                } else {
-                    outputPath
-                }
+                val temp2 =
+                    if (shouldAT) {
+                        outputPath.parent.resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}-remapped.jar")
+                    } else {
+                        outputPath
+                    }
                 executeMcp("forgePatch", temp)
                 appendJavadoc(temp, temp1, patchedJar)
-                remapSourceJar(temp1, temp2)
+                // builtin (srg-named) ATs are applied to the srg-named sources before remap,
+                // replacing the old bytecode-level applyAts step that ran before decompile
+                val tempAt =
+                    if (!builtinAtMap.isEmpty) {
+                        outputPath.parent
+                            .resolve("${outputPath.nameWithoutExtension}-${defaultProdNamespace()}-at.jar")
+                            .also {
+                                applyAT(temp1, it, patchedJar, builtinAtMap)
+                            }
+                    } else {
+                        temp1
+                    }
+                remapSourceJar(tempAt, temp2)
                 if (shouldAT) {
-                    applyAT(temp2, outputPath, patchedJar)
+                    applyAT(temp2, outputPath, patchedJar, atMap)
                 }
                 /*
                 provider.sourceProvider.sourceRemapper.remap(
@@ -1097,19 +1258,24 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                     defaultProdNamespace(),
                     provider.mappings.devNamespace
                 )*/
-                
             } else {
                 executeMcp("forgePatch", outputPath)
             }
         }
     }
 
-    private fun appendJavadoc(input: Path, output: Path, patchedJar: Path) {
+    private fun appendJavadoc(
+        input: Path,
+        output: Path,
+        patchedJar: Path,
+    ) {
         project.logger.info("Appending Javadoc on {}", input)
         val inputJar = JarFile(input.toFile())
-        val parserConfiguration = ParserConfiguration().setLexicalPreservationEnabled(true)
-            .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
-            .setSymbolResolver(JavaSymbolSolver(TypeSolverBuilder().withJAR(patchedJar).withCurrentJRE().build()))
+        val parserConfiguration =
+            ParserConfiguration()
+                .setLexicalPreservationEnabled(true)
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
+                .setSymbolResolver(JavaSymbolSolver(TypeSolverBuilder().withJAR(patchedJar).withCurrentJRE().build()))
         val parser = JavaParser(parserConfiguration)
         val outStream = JarOutputStream(FileOutputStream(output.toFile()))
 
@@ -1131,17 +1297,21 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                 }
                 types.forEach { type ->
                     type.asClassOrInterfaceDeclaration().fields.forEach { field ->
-                        val firstVar = field.variables.first() 
+                        val firstVar = field.variables.first()
                         if (fieldsMap[firstVar.name.asString()] != null) {
                             if (!fieldsMap[firstVar.name.asString()]!!.second.isEmpty()) {
                                 try {
                                     field.setJavadocComment(fieldsMap[firstVar.name.asString()]!!.second)
-                                } catch (e : Exception) {
-                                    project.logger.info("Failed setting Javadoc {} on field {}", fieldsMap[firstVar.name.asString()]!!.second, firstVar.name, e)
+                                } catch (e: Exception) {
+                                    project.logger.info(
+                                        "Failed setting Javadoc {} on field {}",
+                                        fieldsMap[firstVar.name.asString()]!!.second,
+                                        firstVar.name,
+                                        e,
+                                    )
                                 }
                             }
                         }
-                        
                     }
                     type.asClassOrInterfaceDeclaration().methods.forEach { method ->
                         if (methodsMap[method.name.asString()] != null) {
@@ -1160,68 +1330,82 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         }
         outStream.close()
     }
-    
-    private fun remapSourceJar(input: Path, output: Path) {
+
+    private fun remapSourceJar(
+        input: Path,
+        output: Path,
+    ) {
         project.logger.info("Remapping jar {}", input)
         val pattern = Regex("((?:func|field|p)_i?\\d+_(?:\\d{1,2}|[a-zA-Z]{1,2})_?)")
         val inputJar = JarFile(input.toFile())
         val outStream = JarOutputStream(FileOutputStream(output.toFile()))
-        
+
         inputJar.entries().iterator().forEach { entry ->
             val outEntry = ZipEntry(entry.name)
             outStream.putNextEntry(outEntry)
             inputJar.getInputStream(entry).use { inputStream ->
                 inputStream.reader(StandardCharsets.UTF_8).readLines().forEach { line ->
-                    val outLine = line.replace(pattern) { matchResult ->
-                        when {
-                            matchResult.value.startsWith("field") -> {
-                                if (fieldsMap.contains(matchResult.value)) {
-                                    fieldsMap[matchResult.value]!!.first
-                                } else {
+                    val outLine =
+                        line.replace(pattern) { matchResult ->
+                            when {
+                                matchResult.value.startsWith("field") -> {
+                                    if (fieldsMap.contains(matchResult.value)) {
+                                        fieldsMap[matchResult.value]!!.first
+                                    } else {
+                                        matchResult.value
+                                    }
+                                }
+
+                                matchResult.value.startsWith("func") -> {
+                                    if (methodsMap.contains(matchResult.value)) {
+                                        methodsMap[matchResult.value]!!.first
+                                    } else {
+                                        matchResult.value
+                                    }
+                                }
+
+                                matchResult.value.startsWith("p_") -> {
+                                    parameterMap.getOrDefault(
+                                        matchResult.value,
+                                        matchResult.value,
+                                    )
+                                }
+
+                                else -> {
                                     matchResult.value
                                 }
                             }
-
-                            matchResult.value.startsWith("func") -> {
-                                if (methodsMap.contains(matchResult.value)) {
-                                    methodsMap[matchResult.value]!!.first
-                                } else {
-                                    matchResult.value
-                                }
-                            }
-
-                            matchResult.value.startsWith("p_") -> parameterMap.getOrDefault(
-                                matchResult.value,
-                                matchResult.value
-                            )
-
-                            else -> matchResult.value
                         }
-                    }
                     IOUtils.write(outLine + "\n", outStream, StandardCharsets.UTF_8)
                 }
             }
             outStream.closeEntry()
         }
         outStream.close()
-        
     }
 
-    private fun applyAT(input: Path, output: Path, patchedJar: Path) {
+    private fun applyAT(
+        input: Path,
+        output: Path,
+        patchedJar: Path,
+        atMap: ArrayListMultimap<String, Modifier>,
+    ) {
         project.logger.info("Applying AT on jar {}", input)
         val inputJar = JarFile(input.toFile())
-        val parserConfiguration = ParserConfiguration().setLexicalPreservationEnabled(true)
-            .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21)
-            .setSymbolResolver(JavaSymbolSolver(TypeSolverBuilder().withJAR(patchedJar).withCurrentJRE().build()))
+        val parserConfiguration =
+            ParserConfiguration()
+                .setLexicalPreservationEnabled(true)
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21)
+                .setSymbolResolver(JavaSymbolSolver(TypeSolverBuilder().withJAR(patchedJar).withCurrentJRE().build()))
         val parser = JavaParser(parserConfiguration)
         val outStream = JarOutputStream(FileOutputStream(output.toFile()))
-        
+
         inputJar.entries().iterator().forEach { entry ->
             if (entry.name.endsWith(".java")) {
                 val cu: CompilationUnit = parser.parse(inputJar.getInputStream(entry)).result.get()
                 val types = mutableListOf<BodyDeclaration<*>>()
                 cu.types.forEach { type ->
-                    type.members.forEach { member -> 
+                    type.members.forEach { member ->
                         if (member.isClassOrInterfaceDeclaration) {
                             types.add(member.asClassOrInterfaceDeclaration())
                         }
@@ -1256,7 +1440,9 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                                 }
                             } else {
                                 type.asClassOrInterfaceDeclaration().methods.forEach { method ->
-                                    if ((modifier.name == "*" && modifier.desc == "()") || (method.name.asString() == modifier.name && method.toDescriptor() == modifier.desc)) {
+                                    if ((modifier.name == "*" && modifier.desc == "()") ||
+                                        (method.name.asString() == modifier.name && method.toDescriptor() == modifier.desc)
+                                    ) {
                                         if (modifier.modifyFinal) {
                                             method.isFinal = false
                                         }
@@ -1269,7 +1455,7 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
                         }
                     }
                 }
-                        
+
                 val outEntry = ZipEntry(entry.name)
                 outStream.putNextEntry(outEntry)
                 IOUtils.write(LexicalPreservingPrinter.print(cu), outStream, StandardCharsets.UTF_8)
@@ -1279,5 +1465,10 @@ open class FG3MinecraftTransformer(project: Project, val parent: ForgeLikeMinecr
         outStream.close()
     }
 
-    data class Modifier(val modifyClass: Boolean, val name: String, val desc: String, val modifyFinal: Boolean)
+    data class Modifier(
+        val modifyClass: Boolean,
+        val name: String,
+        val desc: String,
+        val modifyFinal: Boolean,
+    )
 }
