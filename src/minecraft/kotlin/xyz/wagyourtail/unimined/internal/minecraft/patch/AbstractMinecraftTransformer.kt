@@ -3,6 +3,7 @@ package xyz.wagyourtail.unimined.internal.minecraft.patch
 import kotlinx.coroutines.runBlocking
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
+import org.apache.commons.compress.archivers.zip.ZipFile
 import org.gradle.api.Project
 import org.gradle.api.file.FileCollection
 import org.gradle.api.tasks.SourceSet
@@ -95,71 +96,94 @@ abstract class AbstractMinecraftTransformer protected constructor(
 
         try {
             val written = mutableSetOf<String>()
+            val clientClasses = mutableListOf<String>()
+            val serverClasses = mutableListOf<String>()
             merged.path.deleteIfExists()
+
             ZipArchiveOutputStream(merged.path.outputStream()).use { zipOutput ->
-                val clientClassEntries = mutableMapOf<String, ClassNode>()
-                clientjar.path.forEachInZip { path, stream ->
-                    if (path.startsWith("META-INF/")) return@forEachInZip
-                    if (path.endsWith(".class")) {
-                        if (shouldStripClass(path)) return@forEachInZip
-                        // add entry
-                        val classReader = ClassReader(stream)
-                        val classNode = ClassNode()
-                        classReader.accept(classNode, 0)
-                        clientClassEntries[path] = classNode
-                    } else {
-                        // copy directly
-                        written.add(path)
-                        zipOutput.putArchiveEntry(ZipArchiveEntry(path))
-                        stream.copyTo(zipOutput)
-                        zipOutput.closeArchiveEntry()
-                    }
-                }
-                val serverClassEntries = mutableMapOf<String, ClassNode>()
-                serverjar.path.forEachInZip { path, stream ->
-                    if (path.startsWith("META-INF/")) return@forEachInZip
-                    if (path.endsWith(".class")) {
-                        if (shouldStripClass(path)) return@forEachInZip
-                        // add entry
-                        val classReader = ClassReader(stream)
-                        val classNode = ClassNode()
-                        classReader.accept(classNode, 0)
-                        serverClassEntries[path] = classNode
-                    } else {
-                        // copy directly
-                        if (written.add(path)) {
+                fun copyNonClassFiles(
+                    zip: ZipFile,
+                    classes: MutableList<String>,
+                    logDuplicates: Boolean,
+                ) {
+                    for (entry in zip.entries) {
+                        if (entry.isDirectory) continue
+                        val path = entry.name
+                        if (path.startsWith("META-INF/")) continue
+                        if (path.endsWith(".class")) {
+                            if (!shouldStripClass(path)) classes.add(path)
+                        } else if (written.add(path)) {
+                            // copy directly
                             zipOutput.putArchiveEntry(ZipArchiveEntry(path))
-                            stream.copyTo(zipOutput)
+                            zip.getInputStream(entry).use { it.copyTo(zipOutput) }
                             zipOutput.closeArchiveEntry()
-                        } else {
+                        } else if (logDuplicates) {
                             project.logger.info("[Unimined/MappingsProvider] Entry in server jar already exists in client jar: $path, skipping")
-                            return@forEachInZip
                         }
                     }
                 }
-                // merge classes
-                for ((name, node) in clientClassEntries) {
-                    val classWriter = ClassWriter(0)
-                    val serverNode = serverClassEntries[name]
-                    val out = try {
-                        merger.accept(node, serverNode)
-                    } catch (e: Exception) {
-                        onMergeFail(node, serverNode!!, zipOutput, e)
-                        continue
+
+                fun readClassNode(
+                    zip: ZipFile,
+                    path: String,
+                ): ClassNode {
+                    val entry = zip.getEntry(path) ?: throw IllegalArgumentException("missing class entry $path")
+                    zip.getInputStream(entry).use { stream ->
+                        val classReader = ClassReader(stream)
+                        val classNode = ClassNode()
+                        classReader.accept(classNode, 0)
+                        return classNode
                     }
-                    out.accept(classWriter)
-                    zipOutput.putArchiveEntry(ZipArchiveEntry(name))
-                    zipOutput.write(classWriter.toByteArray())
-                    zipOutput.closeArchiveEntry()
-                    serverClassEntries.remove(name)
                 }
-                for ((name, node) in serverClassEntries) {
-                    val classWriter = ClassWriter(0)
-                    val out = merger.accept(null, node)
-                    out.accept(classWriter)
-                    zipOutput.putArchiveEntry(ZipArchiveEntry(name))
-                    zipOutput.write(classWriter.toByteArray())
-                    zipOutput.closeArchiveEntry()
+
+                fun openZip(path: Path): ZipFile =
+                    ZipFile.builder().setIgnoreLocalFileHeader(true).setSeekableByteChannel(Files.newByteChannel(path)).get()
+
+                openZip(clientjar.path).use { clientZip ->
+                    openZip(serverjar.path).use { serverZip ->
+                        copyNonClassFiles(clientZip, clientClasses, logDuplicates = false)
+                        copyNonClassFiles(serverZip, serverClasses, logDuplicates = true)
+
+                        // merge classes in sorted order: at most 2 class nodes are held in memory
+                        // at a time instead of every class of both jars simultaneously
+                        clientClasses.sort()
+                        serverClasses.sort()
+                        var ci = 0
+                        var si = 0
+                        while (ci < clientClasses.size || si < serverClasses.size) {
+                            val clientPath = clientClasses.getOrNull(ci)
+                            val serverPath = serverClasses.getOrNull(si)
+                            val cmp =
+                                when {
+                                    clientPath == null -> 1
+                                    serverPath == null -> -1
+                                    else -> clientPath.compareTo(serverPath)
+                                }
+                            val path = if (cmp <= 0) clientPath!! else serverPath!!
+                            val clientNode = if (cmp <= 0) readClassNode(clientZip, clientPath!!) else null
+                            val serverNode = if (cmp >= 0) readClassNode(serverZip, serverPath!!) else null
+                            val out =
+                                if (cmp == 0) {
+                                    try {
+                                        merger.accept(clientNode, serverNode)
+                                    } catch (e: Exception) {
+                                        onMergeFail(clientNode!!, serverNode!!, zipOutput, e)
+                                        ci++
+                                        si++
+                                        continue
+                                    }
+                                } else {
+                                    merger.accept(clientNode, serverNode)
+                                }
+                            val classWriter = ClassWriter(0)
+                            out.accept(classWriter)
+                            zipOutput.putArchiveEntry(ZipArchiveEntry(path))
+                            zipOutput.write(classWriter.toByteArray())
+                            zipOutput.closeArchiveEntry()
+                            if (cmp <= 0) ci++
+                            if (cmp >= 0) si++
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {

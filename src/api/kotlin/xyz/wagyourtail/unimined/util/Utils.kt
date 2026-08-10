@@ -187,7 +187,8 @@ fun Project.cachingDownload(
             size,
             if (ignoreShaOnCache) null else sha1,
             cachePath,
-            cacheTime
+            cacheTime,
+            useSidecar = !gradle.startParameter.isRefreshDependencies && !project.unimined.forceReload,
     )) {
         logger.info("[Unimined/Cache] Using cached $url at $cachePath")
         return cachePath
@@ -226,35 +227,74 @@ fun Project.cachingDownload(
     throw IllegalStateException("Failed to download $url", exception)
 }
 
-fun testSha1(size: Long, sha1: String?, path: Path, expireTime: Duration = 1.days): Boolean {
+private const val SHA1_BUFFER_SIZE = 64 * 1024
+
+private fun MessageDigest.updateFrom(input: InputStream) {
+    val buffer = ByteArray(SHA1_BUFFER_SIZE)
+    while (true) {
+        val n = input.read(buffer)
+        if (n < 0) break
+        update(buffer, 0, n)
+    }
+}
+
+private fun Path.sha1Hex(): String = inputStream().use { stream ->
+    MessageDigest.getInstance("SHA-1").apply { updateFrom(stream) }.digest().toHex()
+}
+
+/** Sidecar SHA-1 cache keyed by file size + last-modified time, so unchanged files (e.g. the
+ * multi-megabyte Minecraft jars) skip re-hashing on every configuration. A modified file
+ * (size or mtime changed) recomputes and refreshes the entry, so a stale hash never wins. */
+private fun sha1SidecarOf(path: Path): Path = path.resolveSibling("${path.fileName}.sha1")
+
+private fun cachedSha1(path: Path): String? {
+    val sidecar = sha1SidecarOf(path)
+    if (!sidecar.exists()) return null
+    val parts = try {
+        sidecar.toFile().readText().trim().split(' ')
+    } catch (e: Exception) {
+        return null
+    }
+    if (parts.size != 3) return null
+    val (cachedSize, cachedMtime, cachedHash) = parts
+    if (cachedSize != path.fileSize().toString()) return null
+    if (cachedMtime != path.getLastModifiedTime().toMillis().toString()) return null
+    return cachedHash.takeIf { it.isNotBlank() }
+}
+
+private fun writeSha1Sidecar(path: Path, hash: String) {
+    try {
+        sha1SidecarOf(path).toFile().writeText("${path.fileSize()} ${path.getLastModifiedTime().toMillis()} $hash")
+    } catch (e: Exception) {
+        // sidecar is a pure optimization; ignore write failures
+    }
+}
+
+fun testSha1(
+    size: Long,
+    sha1: String?,
+    path: Path,
+    expireTime: Duration = 1.days,
+    useSidecar: Boolean = true,
+): Boolean {
     if (path.exists()) {
         if (path.fileSize() == size || size == -1L) {
             if (sha1.isNullOrEmpty()) {
                 // fallback: expire if older than a day
                 return path.getLastModifiedTime().toMillis() > System.currentTimeMillis() - expireTime.inWholeMilliseconds
             }
-            val digestSha1 = MessageDigest.getInstance("SHA-1")
-            path.inputStream().use {
-                digestSha1.update(it.readBytes())
+            var hash = if (useSidecar) cachedSha1(path) else null
+            if (hash == null) {
+                hash = path.sha1Hex()
+                writeSha1Sidecar(path, hash)
             }
-            val hashBytes = digestSha1.digest()
-            val hash = hashBytes.joinToString("") { String.format("%02x", it) }
-            if (hash.equals(sha1, ignoreCase = true)) {
-                return true
-            }
+            return hash.equals(sha1, ignoreCase = true)
         }
     }
     return false
 }
 
-fun Path.getSha1(): String {
-    val digestSha1 = MessageDigest.getInstance("SHA-1")
-    inputStream().use {
-        digestSha1.update(it.readBytes())
-    }
-    val hashBytes = digestSha1.digest()
-    return hashBytes.joinToString("") { String.format("%02x", it) }
-}
+fun Path.getSha1(): String = sha1Hex()
 
 fun File.getSha1() = toPath().getSha1()
 

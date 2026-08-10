@@ -883,8 +883,8 @@ open class MappingsProvider(project: Project, minecraft: MinecraftConfig, subKey
             mappingFile.deleteIfExists()
             return null
         }
-        mappingFile.inputStream().use {
-            return CachedInheritanceTree(tree, StringCharReader(it.readBytes().toString(Charsets.UTF_8)))
+        mappingFile.reader(Charsets.UTF_8).use {
+            return CachedInheritanceTree(tree, StringCharReader(it.readText()))
         }
     }
 
@@ -1034,22 +1034,29 @@ open class MappingsProvider(project: Project, minecraft: MinecraftConfig, subKey
             .filter { it.first.contains(srcName) && it.first.contains(dstName) }
             .associate { it.first[srcName]!!.value to it.first[dstName]!!.value }
 
-        val packages = packageMap.keys
-
         return object : Remapper() {
             override fun map(internalName: String?): String? {
                 if (internalName == null) return null
 
-                val pack = packages.filter { internalName.startsWith(it) }.maxByOrNull { it.length }
-
-                if (pack != null) {
-                    val className = internalName.substring(pack.length)
-
-                    if (className.contains("/")) return internalName;
-
-                    return packageMap[pack] + className
+                val lastSlash = internalName.lastIndexOf('/')
+                if (lastSlash < 0) {
+                    // no package separator: only a default-package mapping can match
+                    return packageMap[""]?.let { it + internalName } ?: internalName
                 }
-
+                // Walk package prefixes from longest to shortest (package keys always end with
+                // '/', so a match is always at a component boundary). The longest match wins,
+                // and — matching the previous linear-scan semantics — a match whose remainder
+                // still contains '/' is not remapped (no fallback to shorter packages).
+                var end = lastSlash
+                while (end >= 0) {
+                    val pack = packageMap[internalName.substring(0, end + 1)]
+                    if (pack != null) {
+                        val className = internalName.substring(end + 1)
+                        if (className.contains('/')) return internalName
+                        return pack + className
+                    }
+                    end = internalName.lastIndexOf('/', end - 1)
+                }
                 return internalName
             }
         }
