@@ -20,7 +20,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.*
-import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration.Companion.days
 
 open class MinecraftDownloader(val project: Project, open val provider: MinecraftProvider) : MinecraftData() {
 
@@ -71,7 +71,13 @@ open class MinecraftDownloader(val project: Project, open val provider: Minecraf
             project.cachingDownload(
                 launcherMetaUrl,
                 cachePath = file,
-                expireTime = 0.seconds
+                // A daily TTL keeps the manifest fresh enough to pick up new versions while
+                // avoiding a network round-trip + full re-parse on every configuration. The
+                // manifest only feeds version lookups and mcVersionCompare; a slightly stale
+                // copy is still correct for the version currently being built, since it was
+                // resolved from this same manifest. Force a refresh with --refresh-dependencies
+                // (or forceReload) when a brand-new version fails to resolve.
+                expireTime = 1.days
             )
         }
 

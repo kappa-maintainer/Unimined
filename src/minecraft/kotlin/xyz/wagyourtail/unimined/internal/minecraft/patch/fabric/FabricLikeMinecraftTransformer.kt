@@ -116,12 +116,17 @@ abstract class FabricLikeMinecraftTransformer(
     override var devMappings: Path? by FinalizeOnRead(LazyMutable {
         if (!provider.obfuscated) return@LazyMutable null
         runBlocking {
-            provider.localCache
+            val target = provider.localCache
                 .resolve("mappings")
                 .createDirectories()
                 .resolve("intermediary2named-${provider.mappings.combinedNames()}.jar")
-                .apply {
-                    val file = resolveSibling("mappings.tiny").toFile()
+            // The jar is content-addressed by the combined mappings hash, so an existing file is
+            // always current: skip the full tiny-v2 re-export on every configuration/import.
+            if (target.exists() && target.fileSize() > 0 && !project.unimined.forceReload) {
+                return@runBlocking target
+            }
+            target.apply {
+                val file = resolveSibling("mappings.tiny").toFile()
                     val export = ExportMappingsTaskImpl.ExportImpl(provider.mappings).apply {
                         location = file
                         type = TinyV2Writer
