@@ -2,6 +2,9 @@ package xyz.wagyourtail.unimined
 
 import org.gradle.api.Project
 import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+import org.gradle.api.publish.PublishingExtension
+import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.publish.tasks.GenerateModuleMetadata
 import org.gradle.api.tasks.SourceSet
 import xyz.wagyourtail.unimined.api.UniminedExtension
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftConfig
@@ -639,6 +642,52 @@ open class UniminedExtensionImpl(
             val mcFiles = sourceSet.runtimeClasspath.files.mapNotNull { getSourceSetFromMinecraft(it.toPath()) }
             if (mcFiles.size > 1) {
                 throw IllegalStateException("multiple minecraft jars in runtime classpath of $sourceSet, from $mcFiles")
+            }
+        }
+        cleanModPublications()
+    }
+
+    /**
+     * Mod jars must not leak their (remapped) dependency coordinates into published POMs:
+     * - the supply-back step rewrites declared mod dependencies to synthetic `remapped_`
+     *   coordinates that only exist in this project's local modTransform repository, so
+     *   publishing them breaks every downstream consumer that does not share that cache;
+     * - even the original coordinates are wrong for mod consumers: mod dependencies are
+     *   conventionally declared by the downstream mod author itself (curse.maven & co), and
+     *   regular library dependencies should be shadowed/contained into the mod jar rather
+     *   than inherited, or the loader ends up with duplicate classes / classloader errors.
+     *
+     * So for any project that actually remaps mods we wipe the POM dependencies and switch
+     * the publication to POM-only (no Gradle Module Metadata): the .module file would carry
+     * the same leaked dependencies and there is no API to filter it (MavenPublication has
+     * no variant() in Gradle 9.7), and mod consumers resolve via POM-only just fine.
+     */
+    private fun cleanModPublications() {
+        if (!cleanModPom) {
+            project.logger.info("[Unimined] cleanModPom disabled; publishing POM/module metadata left untouched")
+            return
+        }
+        val hasRemappedMods =
+            minecrafts.values.any { (it as MinecraftProvider).mods.remapConfigsResolved.isNotEmpty() }
+        if (!hasRemappedMods) return
+        project.pluginManager.withPlugin("maven-publish") {
+            project.extensions.configure(PublishingExtension::class.java) { publishing ->
+                publishing.publications.withType(MavenPublication::class.java).configureEach { publication ->
+                    project.logger.lifecycle("[Unimined] stripping dependencies from published POM of ${publication.name}")
+                    publication.pom.withXml { xmlProvider ->
+                        val root = xmlProvider.asNode() as groovy.util.Node
+                        val stripped = root.children()
+                            .filterIsInstance<groovy.util.Node>()
+                            .filter { (it.name() as? groovy.namespace.QName)?.localPart == "dependencies" }
+                            .onEach { it.children().clear() }
+                        if (stripped.isNotEmpty()) {
+                            project.logger.lifecycle("[Unimined] cleared ${stripped.size} <dependencies> block(s) in POM of ${publication.name}")
+                        }
+                    }
+                }
+            }
+            project.tasks.withType(GenerateModuleMetadata::class.java).configureEach {
+                it.enabled = false
             }
         }
     }

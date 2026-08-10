@@ -258,7 +258,7 @@ class MixinRemapExtension(
                         object : ClassVisitor(Constant.ASM_VERSION, visitor) {
                             override fun visitAnnotation(descriptor: String?, visible: Boolean): AnnotationVisitor? {
                                 if (descriptor == Annotation.MIXIN) {
-                                    extension.logger.warn("[RefmapBuilder] found mixin class ${cls.name} without entry!")
+                                    extension.logger.info("[RefmapBuilder] found mixin class ${cls.name} without entry!")
                                 }
                                 return super.visitAnnotation(descriptor, visible)
                             }

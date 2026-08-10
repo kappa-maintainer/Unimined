@@ -62,7 +62,7 @@ abstract class RemapJarTaskImpl @Inject constructor(provider: MinecraftConfig):
         classpathList: Array<Path>
     ): Unit = runBlocking {
         project.logger.info("[Unimined/RemapJar ${path}] remapping $fromNs -> $toNs (start time: ${System.currentTimeMillis()})")
-        val remapperB = TinyRemapper.newRemapper()
+        val remapperB = TinyRemapper.newRemapper(TrLoggerFilter(project.logger))
             .withMappings(
                 provider.mappings.getTRMappings(
                     fromNs to toNs,

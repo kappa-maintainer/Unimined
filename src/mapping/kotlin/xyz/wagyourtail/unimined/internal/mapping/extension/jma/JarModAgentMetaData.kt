@@ -53,9 +53,9 @@ class JarModAgentMetaData(parent: MixinRemapExtension) : MixinRemapExtension.Mix
                     it.bufferedReader().use { reader ->
                         for (line in reader.lines()) {
                             if (classesToRefmap.containsKey(line) && classesToRefmap[line] != refmapName) {
-                                parent.logger.warn("[PreRead] $line already has a refmap entry!")
-                                parent.logger.warn("[PreRead] ${classesToRefmap[line]} != $refmapName")
-                                parent.logger.warn("[PreRead] Will only read/write to ${classesToRefmap[line]} for $line")
+                                parent.logger.info("[PreRead] $line already has a refmap entry!")
+                                parent.logger.info("[PreRead] ${classesToRefmap[line]} != $refmapName")
+                                parent.logger.info("[PreRead] Will only read/write to ${classesToRefmap[line]} for $line")
                                 continue
                             }
                             classesToRefmap[line] = refmapName

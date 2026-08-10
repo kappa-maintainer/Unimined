@@ -285,7 +285,7 @@ class ModRemapProvider(
         runBlocking {
             val remapperB =
                 TinyRemapper
-                    .newRemapper()
+                    .newRemapper(TrLoggerFilter(project.logger))
                     .withMappings(
                         provider.mappings.getTRMappings(
                             fromNs to toNs,
@@ -342,6 +342,7 @@ class ModRemapProvider(
                 return@runBlocking
             }
             project.logger.lifecycle("[Unimined/ModRemapper] Found $count mods for remapping")
+            project.logger.info("[Unimined/ModRemapper] publishModuleMetadata=$publishModuleMetadata (ivy repos: ${project.repositories.filterIsInstance<org.gradle.api.artifacts.repositories.IvyArtifactRepository>().map { it.name + " -> " + it.url }})")
             project.logger.info("[Unimined/ModRemapper] remapAtToLegacy: $remapAtToLegacy")
             project.logger.info("[Unimined/ModRemapper] mixinRemap: $mixinRemap")
 
@@ -438,6 +439,29 @@ class ModRemapProvider(
                 writeMetadata(artifacts.map(::coordinatesFor))
             }
 
+            // Older Unimined versions published remapped coordinates without a classifier
+            // (e.g. `remapped_com.cleanroommc:scalar:1.0.0`), and those POMs are still consumed
+            // downstream. Mirror every classified remapped binary under the plain
+            // <module>-<version>.jar main-artifact name so both the classifier-carrying
+            // supply-back coordinates and the legacy classifier-less requests resolve to the
+            // same remapped file.
+            for ((artifact, file) in mods) {
+                val coordinates = coordinatesFor(artifact)
+                val fileName = coordinates.binary.fileName.toString()
+                val mainName = "${coordinates.module}-${coordinates.version}.${coordinates.extension}"
+                if (fileName != mainName) {
+                    val mainJar = coordinates.directory.resolve(mainName)
+                    if (project.unimined.forceReload || !mainJar.exists()) {
+                        try {
+                            Files.copy(file.toPath(), mainJar, StandardCopyOption.REPLACE_EXISTING)
+                        } catch (e: Exception) {
+                            mainJar.deleteIfExists()
+                            throw IllegalStateException("Failed to mirror remapped ${coordinates.group}:${coordinates.module}:${coordinates.version} under main artifact name $mainJar", e)
+                        }
+                    }
+                }
+            }
+
             // supply back to proper configs
             for (c in configurations) {
                 val outConf = targetConfigurations[c]
@@ -467,6 +491,7 @@ class ModRemapProvider(
                                 "${coordinates.group}:${coordinates.module}:${coordinates.version}$classifierSuffix",
                             ).also { dependency ->
                                 (dependency as? ExternalModuleDependency)?.isTransitive = false
+                                project.logger.info("[Unimined/ModRemapper]   supplying ${coordinates.group}:${coordinates.module}:${coordinates.version}$classifierSuffix to ${c.name} (publishModuleMetadata=$publishModuleMetadata, classifierSuffix='$classifierSuffix')")
                             },
                     )
                 }
@@ -738,6 +763,9 @@ class ModRemapProvider(
             coordinates.moduleMetadata.toFile().writeText(
                 GsonBuilder().setPrettyPrinting().create().toJson(moduleMetadata),
             )
+            project.logger.info("[Unimined/ModRemapper]   wrote module metadata ${coordinates.moduleMetadata} with binaries $binaryNames (sourceExists=$sourceExists)")
+        } else {
+            project.logger.info("[Unimined/ModRemapper]   pom-only component ${coordinates.group}:${coordinates.module}:${coordinates.version}; no .module written")
         }
     }
 

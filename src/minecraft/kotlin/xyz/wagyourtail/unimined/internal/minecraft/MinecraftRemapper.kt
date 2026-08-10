@@ -14,6 +14,7 @@ import xyz.wagyourtail.unimined.api.minecraft.MinecraftJar
 import xyz.wagyourtail.unimined.mapping.EnvType
 import xyz.wagyourtail.unimined.mapping.Namespace
 import xyz.wagyourtail.unimined.util.FinalizeOnRead
+import xyz.wagyourtail.unimined.util.TrLoggerFilter
 import xyz.wagyourtail.unimined.util.getField
 import java.nio.file.Path
 import kotlin.io.path.*
@@ -86,7 +87,7 @@ class MinecraftRemapper(val project: Project, val provider: MinecraftProvider): 
     }
 
     suspend fun remapToInternal(from: Path, target: Path, envType: EnvType, fromNs: Namespace, toNs: Namespace) {
-        val remapperB = TinyRemapper.newRemapper()
+        val remapperB = TinyRemapper.newRemapper(TrLoggerFilter(project.logger))
             .withMappings(
                 provider.mappings.getTRMappings(
                     fromNs to toNs,

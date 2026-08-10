@@ -65,6 +65,17 @@ abstract class UniminedExtension(project: Project) : FabricLikeApiExtension(proj
     @set:ApiStatus.Experimental
     var footgunChecks: Boolean by FinalizeOnRead(true)
 
+    /**
+     * Strips every dependency from the POM(s) of mod projects and publishes them POM-only
+     * (no Gradle Module Metadata): mod dependencies are conventionally declared by the
+     * downstream mod author, and library dependencies should be shadowed/contained into the
+     * mod jar rather than inherited. Disable only if you hand-author the published POM and
+     * know what you are doing — the synthetic `remapped_` coordinates that would otherwise
+     * leak into the POM only exist in this project's local cache.
+     */
+    @set:ApiStatus.Experimental
+    var cleanModPom: Boolean by FinalizeOnRead(true)
+
     @Deprecated("functions provided directly by unimined", ReplaceWith("unimined"))
     val fabricApi = project.extensions.create("fabricApi", FabricLikeApiExtension::class.java)
 
