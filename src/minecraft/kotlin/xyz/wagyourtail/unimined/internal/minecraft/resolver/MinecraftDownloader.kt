@@ -40,15 +40,20 @@ open class MinecraftDownloader(val project: Project, open val provider: Minecraf
      */
     override fun mcVersionCompare(vers1: String, vers2: String): Int {
         if (vers1 == vers2) return 0
-        for (i in launcherMeta) {
-            if (i.asJsonObject["id"].asString == vers1) {
-                return 1
-            }
-            if (i.asJsonObject["id"].asString == vers2) {
-                return -1
-            }
-        }
+        val i1 = versionIndex[vers1]
+        val i2 = versionIndex[vers2]
+        if (i1 != null) return if (i2 != null) if (i1 < i2) 1 else -1 else 1
+        if (i2 != null) return -1
         throw Exception("Failed to compare versions, $vers1 and $vers2 are not valid versions")
+    }
+
+    /** manifest id -> position index, built once instead of linear-scanning launcherMeta per compare */
+    private val versionIndex: Map<String, Int> by lazy {
+        val index = HashMap<String, Int>(launcherMeta.size() * 2)
+        for ((i, version) in launcherMeta.withIndex()) {
+            index[version.asJsonObject["id"].asString] = i
+        }
+        index
     }
 
     override val minecraftClientFile: File

@@ -296,9 +296,13 @@ abstract class AbstractMinecraftTransformer protected constructor(
     /*
      * only accurate on official mappings
      */
+    private val includeGlobRegexes: List<Regex> by lazy {
+        includeGlobs.map { Regex(GlobToRegex.apply(it)) }
+    }
+
     open fun shouldStripClass(path: String): Boolean {
         // check if in include globs
-        for (glob in includeGlobs.map { Regex(GlobToRegex.apply(it)) }) {
+        for (glob in includeGlobRegexes) {
             if (glob.matches(path)) return false
         }
         // otherwise strip
