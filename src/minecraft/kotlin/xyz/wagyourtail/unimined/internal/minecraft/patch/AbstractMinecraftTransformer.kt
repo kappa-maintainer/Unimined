@@ -90,7 +90,7 @@ abstract class AbstractMinecraftTransformer protected constructor(
         }
         val merged = mergedJar(clientjar, serverjar)
 
-        if (merged.path.exists() && !project.unimined.forceReload) {
+        if (merged.path.isValidJarCache() && !project.unimined.forceReload) {
             return merged
         }
 
@@ -204,7 +204,7 @@ abstract class AbstractMinecraftTransformer protected constructor(
             patches = minecraft.patches + listOf("fixed")
         )
 
-        if (target.path.exists() && !project.unimined.forceReload) {
+        if (target.path.isValidJarCache() && !project.unimined.forceReload) {
             return target
         }
 
@@ -259,7 +259,7 @@ abstract class AbstractMinecraftTransformer protected constructor(
                 patches = baseMinecraft.patches + listOf("fixInners")
             )
 
-            if (fixedInners.path.exists() && !project.unimined.forceReload) {
+            if (fixedInners.path.isValidJarCache() && !project.unimined.forceReload) {
                 return fixedInners
             }
 

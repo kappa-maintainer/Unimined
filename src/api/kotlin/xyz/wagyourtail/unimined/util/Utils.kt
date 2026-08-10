@@ -480,6 +480,16 @@ fun Path.isZip(): Boolean =
     inputStream().use { stream -> ByteArray(4).also { stream.read(it, 0, 4) } }
         .contentEquals(byteArrayOf(0x50, 0x4B, 0x03, 0x04))
 
+/**
+ * True when this file can be used as a cached jar artifact. A zip that was written without any
+ * entries (an empty zip is exactly 22 bytes) is treated as corrupted: the cache-hit checks must
+ * not accept it, otherwise a single interrupted/failed generation run poisons the cache forever
+ * (e.g. the minecraft dev jar chain), because the stale empty jar keeps being served to
+ * compileClasspath and downstream tasks.
+ */
+fun Path.isValidJarCache(): Boolean =
+    Files.exists(this) && Files.size(this) > 100
+
 fun Path.readZipContents(): List<String> {
     val contents = mutableListOf<String>()
     forEachInZip { entry, _ ->

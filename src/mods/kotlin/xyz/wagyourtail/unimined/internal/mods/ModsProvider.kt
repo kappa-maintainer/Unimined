@@ -28,6 +28,19 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
         remap(it)
     }
 
+    /**
+     * Classpath-only companion to [modImplementation]: dependencies declared here are added to the
+     * mod compile/runtime classpath exactly as declared, but are never remapped and never copied
+     * into the modTransform repository. Use this for language/toolchain libraries (Scala runtime,
+     * ASM, ...) that a mod needs on the classpath but that never reference Minecraft classes.
+     */
+    val modLibrary = project.configurations.maybeCreate("modLibrary".withSourceSet(minecraft.sourceSet)).also {
+        minecraft.sourceSet.apply {
+            compileClasspath += it
+            runtimeClasspath += it
+        }
+    }
+
     private var default by FinalizeOnRead<ModRemapProvider.() -> Unit> {}
 
     val remapConfigsResolved = mutableMapOf<Configuration, ModRemapProvider>()

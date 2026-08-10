@@ -16,6 +16,7 @@ import xyz.wagyourtail.unimined.mapping.Namespace
 import xyz.wagyourtail.unimined.util.FinalizeOnRead
 import xyz.wagyourtail.unimined.util.TrLoggerFilter
 import xyz.wagyourtail.unimined.util.getField
+import xyz.wagyourtail.unimined.util.isValidJarCache
 import java.nio.file.Path
 import kotlin.io.path.*
 
@@ -125,6 +126,11 @@ class MinecraftRemapper(val project: Project, val provider: MinecraftProvider): 
             project.logger.warn("[Unimined/McRemapper] Failed to remap $from to $target in $envType")
             target.deleteIfExists()
             throw e
+        }
+        if (!target.isValidJarCache()) {
+            target.deleteIfExists()
+            throw RuntimeException("[Unimined/McRemapper] Remap produced an empty output jar for $from -> $target; " +
+                "delete the unimined cache (or run with -PforceReload) and retry")
         }
     }
 }

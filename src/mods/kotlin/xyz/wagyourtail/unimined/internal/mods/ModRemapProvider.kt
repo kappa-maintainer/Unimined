@@ -126,10 +126,20 @@ class ModRemapProvider(
         defaultedMapOf<Configuration, Map<ResolvedArtifact, File>> {
             val detached = project.configurations.detachedConfiguration().apply(this@ModRemapProvider.config)
             detached.dependencies.addAll(originalDeps[it])
+            // Only remap directly-declared mods; transitive dependencies (language/toolchain
+            // libraries like the Scala runtime) stay on the classpath as the original jars and
+            // are never pulled into the remap scope or the modTransform repository. Mods that do
+            // need such libraries declared on the mod classpath can add them via the `modLibrary`
+            // configuration, which is classpath-only and never remapped.
+            detached.isTransitive = false
             val resolved = mutableMapOf<ResolvedArtifact, File>()
             project.logger.info("[Unimined/ModRemapper] Original Dep Files: $it")
             for (r in detached.resolvedConfiguration.resolvedArtifacts) {
                 if (r.extension == "pom") continue
+                if (shouldExclude(r.moduleVersion.id.group, r.name)) {
+                    project.logger.info("[Unimined/ModRemapper]    excluding $r (excluded by remap config)")
+                    continue
+                }
                 project.logger.info("[Unimined/ModRemapper]    $r -> ${r.file}")
                 resolved[r] = r.file
             }
@@ -372,7 +382,7 @@ class ModRemapProvider(
                             ] = configuration
                         }
                     }
-                    mod.value to coordinates.binary.let { it to (it.exists() && !forceReload) }
+                    mod.value to coordinates.binary.let { it to (it.isValidJarCache() && !forceReload) }
                 }
             project.logger.info("[Unimined/ModRemapper] Remapping Mods: ")
             if (targets.values.none { !it.second.second }) {
@@ -451,7 +461,7 @@ class ModRemapProvider(
                 val mainName = "${coordinates.module}-${coordinates.version}.${coordinates.extension}"
                 if (fileName != mainName) {
                     val mainJar = coordinates.directory.resolve(mainName)
-                    if (project.unimined.forceReload || !mainJar.exists()) {
+                    if (project.unimined.forceReload || !mainJar.isValidJarCache()) {
                         try {
                             Files.copy(file.toPath(), mainJar, StandardCopyOption.REPLACE_EXISTING)
                         } catch (e: Exception) {
@@ -612,6 +622,13 @@ class ModRemapProvider(
         } catch (e: Exception) {
             targetFile.deleteIfExists()
             throw e
+        }
+        if (!targetFile.isValidJarCache()) {
+            targetFile.deleteIfExists()
+            throw IllegalStateException(
+                "Remap produced an empty output jar for ${dep.moduleVersion.id} -> $toNs; " +
+                    "delete the unimined cache (or run with -PforceReload) and retry",
+            )
         }
     }
 
