@@ -3,9 +3,14 @@ package xyz.wagyourtail.unimined.internal.minecraft.task
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import xyz.wagyourtail.unimined.api.minecraft.task.GenSourcesTask
+import xyz.wagyourtail.unimined.api.unimined
 import xyz.wagyourtail.unimined.internal.minecraft.MinecraftProvider
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.ForgeLikeMinecraftTransformer
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import javax.inject.Inject
+import kotlin.io.path.exists
 import kotlin.io.path.nameWithoutExtension
 
 abstract class GenSourcesTaskImpl
@@ -51,6 +56,36 @@ abstract class GenSourcesTaskImpl
             logger.info("[Unimined/GenSources ${this.path}] sources jar generated at $sourcesJar")
             if (linemappedJar != null) {
                 logger.info("[Unimined/GenSources ${this.path}] linemapped jar generated at $linemappedJar")
+            }
+            publishSourcesToLocalMaven(sourcesJar)
+        }
+
+        /**
+         * Copies the generated sources jar into the global local Maven repository tree (next to
+         * the dev jar published at configuration time) and refreshes the sourcesElements variant
+         * of the component's .module so IDEA's modern auxiliary-artifact resolver picks the
+         * sources up on the next sync.
+         */
+        private fun publishSourcesToLocalMaven(sourcesJar: Path) {
+            if (!sourcesJar.exists()) return
+            val publishModuleMetadata = project.repositories.none { it is org.gradle.api.artifacts.repositories.IvyArtifactRepository }
+            val baseDir = project.unimined.getGlobalCache().resolve("maven")
+            val dir =
+                xyz.wagyourtail.unimined.util.LocalMaven.coordinatesDirectory(
+                    baseDir,
+                    provider.mavenGroup,
+                    provider.minecraftDepName,
+                    provider.version,
+                )
+            val sourcesName = "${provider.minecraftDepName}-${provider.version}-sources.jar"
+            Files.copy(sourcesJar, dir.resolve(sourcesName), StandardCopyOption.REPLACE_EXISTING)
+            if (publishModuleMetadata) {
+                xyz.wagyourtail.unimined.util.LocalMaven.addSourcesVariant(
+                    dir,
+                    provider.minecraftDepName,
+                    provider.version,
+                    sourcesName,
+                )
             }
         }
     }

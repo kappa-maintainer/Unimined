@@ -301,6 +301,14 @@ abstract class UniminedExtension(project: Project) : FabricLikeApiExtension(proj
 
     abstract val modsRemapRepo: ArtifactRepository
 
+    /**
+     * Local (file-based) Maven repository under the global cache where Unimined publishes the
+     * final Minecraft artifacts (dev jar, generated sources) and the official mappings files.
+     * Being a Maven repository (not ivy) keeps IDEA on its modern auxiliary-artifact resolver,
+     * which discovers sources through the sourcesElements variant of the Gradle Module Metadata.
+     */
+    abstract val uniminedMaven: ArtifactRepository
+
     abstract fun wagYourMaven(name: String)
     abstract fun minecraftForgeMaven()
     abstract fun neoForgedMaven()

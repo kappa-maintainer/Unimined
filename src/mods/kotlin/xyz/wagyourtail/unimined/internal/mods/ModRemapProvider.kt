@@ -448,10 +448,19 @@ class ModRemapProvider(
                     .filter { artifact -> artifact.extension != "pom" }
                     .distinctBy { artifact -> artifact.moduleVersion.id }) {
                     val coordinates = coordinatesFor(artifact)
-                    // the remapped coordinates must carry the artifact classifier: the synthetic
-                    // modsRemap repo is ivy artifact-only (no metadata), so a bare coordinate
-                    // cannot map back to a classified binary like jei-4.33.0-dev.jar
-                    val classifierSuffix = artifact.classifier?.let { ":$it" } ?: ""
+                    // With Gradle Module Metadata published (no ivy repository), the variant
+                    // declares the exact binary file, so no classifier is needed — and a bare
+                    // coordinate is required for IDEA's modern auxiliary-artifact resolver:
+                    // its ArtifactView variant re-selection returns no artifacts for a
+                    // classifier-carrying dependency, which would silently drop the sources.
+                    // The POM-only fallback (ivy projects) still needs the classifier to map
+                    // back to the classified binary like jei-4.33.0-dev.jar.
+                    val classifierSuffix =
+                        if (publishModuleMetadata) {
+                            ""
+                        } else {
+                            artifact.classifier?.let { ":$it" } ?: ""
+                        }
                     outConf.dependencies.add(
                         project.dependencies
                             .create(

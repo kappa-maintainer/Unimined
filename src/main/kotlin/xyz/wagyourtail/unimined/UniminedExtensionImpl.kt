@@ -148,6 +148,23 @@ open class UniminedExtensionImpl(
             }
         }
 
+    /**
+     * The global local Maven repository (under [getGlobalCache]) where the final Minecraft
+     * artifacts and the official mappings are published. A Maven repository (unlike the ivy
+     * file-mapping repositories it replaces) keeps the project free of ivy repositories, so
+     * IDEA uses its modern auxiliary-artifact resolver and sources attach automatically via
+     * the sourcesElements variant of the Gradle Module Metadata.
+     */
+    override val uniminedMaven =
+        project.repositories.maven {
+            it.name = "uniminedMaven"
+            it.url = getGlobalCache().resolve("maven").toUri()
+            it.content {
+                // Only Unimined-published synthetic components live here.
+                it.includeGroup("net.minecraft")
+            }
+        }
+
     val minecraftForgeMaven by lazy {
         project.repositories.maven {
             it.name = "minecraftForge"
@@ -273,6 +290,13 @@ open class UniminedExtensionImpl(
         project.logger.info("[Unimined] adding WagYourTail maven: ${wagYourMaven[name]}")
     }
 
+    /**
+     * Kept as an ivy repository on purpose: https://mcphackers.org/versionsV2/ serves flat
+     * `<version>.zip` files with no Maven directory layout, so a Maven repository cannot
+     * address them. Only added when retroMCP mappings are requested, and the synthetic
+     * components of such projects are still published POM-only (see writeMetadata), so
+     * IDEA's legacy auxiliary resolver keeps attaching sources.
+     */
     val mcphackersIvy by lazy {
         project.repositories.ivy { ivy ->
             ivy.name = "mcphackers"
@@ -528,6 +552,14 @@ open class UniminedExtensionImpl(
         project.logger.info("[Unimined] adding Liteloader maven: $liteloaderMaven")
     }
 
+    /**
+     * Kept as an ivy repository on purpose: dl.liteloader.com/redist/legacy serves flat
+     * `liteloader_<version>.zip` files (underscore naming, no Maven directory layout), so a
+     * Maven repository cannot address them. Only added for legacy Minecraft versions whose
+     * loader is not listed in the modern versions.json, and the synthetic components of such
+     * projects are still published POM-only (see writeMetadata), so IDEA's legacy auxiliary
+     * resolver keeps attaching sources.
+     */
     val legacyLiteloaderMaven by lazy {
         project.repositories.ivy {
             it.url = URI.create("https://dl.liteloader.com/redist/legacy/")

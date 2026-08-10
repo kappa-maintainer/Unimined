@@ -44,6 +44,8 @@ import xyz.wagyourtail.unimined.mapping.visitor.delegate.delegator
 import xyz.wagyourtail.unimined.util.*
 import java.io.File
 import java.net.URI
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import kotlin.collections.toMutableMap
 import kotlin.io.path.*
@@ -282,37 +284,41 @@ open class MappingsProvider(project: Project, minecraft: MinecraftConfig, subKey
 
     private val mojmapIvys by lazy {
         if (minecraft.minecraftData.hasMappings) {
-            // add provider for client-mappings
-            project.repositories.ivy { ivy ->
-                ivy.name = "Official Client Mapping Provider"
-                ivy.patternLayout {
-                    it.artifact(minecraft.minecraftData.officialClientMappingsFile.name)
-                }
-                ivy.url = minecraft.minecraftData.officialClientMappingsFile.parentFile.toURI()
-                ivy.metadataSources { sources ->
-                    sources.artifact()
-                }
-                ivy.content {
-                    it.includeVersion("net.minecraft", "client-mappings", minecraft.version)
-                }
-            }
-
-            // add provider for server-mappings
-            project.repositories.ivy { ivy ->
-                ivy.name = "Official Server Mapping Provider"
-                ivy.patternLayout {
-                    it.artifact(minecraft.minecraftData.officialServerMappingsFile.name)
-                }
-                ivy.url = minecraft.minecraftData.officialServerMappingsFile.parentFile.toURI()
-                ivy.metadataSources { sources ->
-                    sources.artifact()
-                }
-                ivy.content {
-                    it.includeVersion("net.minecraft", "server-mappings", minecraft.version)
-                }
-            }
+            // Publish the official mappings files into the global local Maven repository
+            // instead of exposing them through ivy file-mapping repositories. The mojmap()
+            // dependencies use the `@txt` extension, which resolves
+            // `<module>-<version>.txt` from the maven artifact pattern.
+            publishMappingsToLocalMaven(
+                "client-mappings",
+                minecraft.minecraftData.officialClientMappingsFile,
+            )
+            publishMappingsToLocalMaven(
+                "server-mappings",
+                minecraft.minecraftData.officialServerMappingsFile,
+            )
         }
         "mojmap"
+    }
+
+    private fun publishMappingsToLocalMaven(module: String, file: File) {
+        val dir = xyz.wagyourtail.unimined.util.LocalMaven.coordinatesDirectory(
+            project.unimined.getGlobalCache().resolve("maven"),
+            "net.minecraft",
+            module,
+            minecraft.version,
+        )
+        // official mapping files are plain text (or an empty zip for "empty-" versions)
+        val target = dir.resolve("$module-${minecraft.version}.txt")
+        Files.copy(file.toPath(), target, StandardCopyOption.REPLACE_EXISTING)
+        // POM-only is enough here: the mapping configurations are not part of IDEA's project
+        // model, so no sources variant is needed (and no .module is ever written).
+        xyz.wagyourtail.unimined.util.LocalMaven.writePom(
+            dir,
+            "net.minecraft",
+            module,
+            minecraft.version,
+            publishModuleMetadata = false,
+        )
     }
 
     private fun mojmapIvy() {

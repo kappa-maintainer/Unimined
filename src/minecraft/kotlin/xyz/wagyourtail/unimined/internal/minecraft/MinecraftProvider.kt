@@ -8,6 +8,7 @@ import org.gradle.api.Task
 import org.gradle.api.artifacts.Configuration
 import org.gradle.api.artifacts.Dependency
 import org.gradle.api.artifacts.ModuleDependency
+import org.gradle.api.artifacts.repositories.IvyArtifactRepository
 import org.gradle.api.tasks.SourceSet
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.TaskProvider
@@ -75,7 +76,9 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.*
 import kotlin.io.path.*
@@ -786,20 +789,13 @@ open class MinecraftProvider(
             sources.deleteIfExists()
         }
 
-        // create ivy repo for mc dev file / mc dev source file
-        project.repositories.ivy { ivy ->
-            ivy.name = "Minecraft Provider ${project.path}:${sourceSet.name}"
-            ivy.patternLayout {
-                it.artifact(getMcDevFile().nameWithoutExtension + "(-[classifier])(.[ext])")
-            }
-            ivy.url = minecraftFileDev.parentFile.toURI()
-            ivy.metadataSources { sources ->
-                sources.artifact()
-            }
-            ivy.content {
-                it.includeVersion(mavenGroup, minecraftDepName, version)
-            }
-        }
+        // Publish the final dev jar (and sources jar, when already present) into the global
+        // local Maven repository instead of exposing them through an ivy file-mapping repo.
+        // A project free of ivy repositories keeps IDEA on its modern auxiliary-artifact
+        // resolver, where sources attach automatically through the sourcesElements variant of
+        // the Gradle Module Metadata (or the maven `-sources` classifier for POM-only
+        // components in projects that do declare an ivy repository).
+        publishMinecraftToLocalMaven()
 
         // remap mods
         mods.afterEvaluate()
@@ -811,6 +807,59 @@ open class MinecraftProvider(
 
         // run patcher after evaluate
         (mcPatcher as AbstractMinecraftTransformer).afterEvaluate()
+    }
+
+    /**
+     * Copies the final dev jar (and the generated sources jar when it exists) into the global
+     * local Maven repository tree and writes the synthetic POM / Gradle Module Metadata for the
+     * `mavenGroup:minecraftDepName:version` coordinates, so the `minecraft` dependency resolves
+     * from the `uniminedMaven` repository instead of the previous ivy file-mapping repository.
+     */
+    private fun publishMinecraftToLocalMaven() {
+        val publishModuleMetadata = project.repositories.none { it is IvyArtifactRepository }
+        val baseDir = project.unimined.getGlobalCache().resolve("maven")
+        val dir =
+            xyz.wagyourtail.unimined.util.LocalMaven
+                .coordinatesDirectory(baseDir, mavenGroup, minecraftDepName, version)
+        dir.createDirectories()
+
+        // trigger generation of the final dev jar before copying
+        val devFile = minecraftFileDev
+        val extension = if (devFile.extension.isBlank()) "jar" else devFile.extension
+        val isLinemapped = devFile.name.endsWith("-linemapped.$extension")
+        val binaryName = "$minecraftDepName-$version${if (isLinemapped) "-linemapped" else ""}.$extension"
+        val sourcesName = "$minecraftDepName-$version-sources.jar"
+
+        copyIfChanged(devFile.toPath(), dir.resolve(binaryName))
+        val sources = minecraftSourceFileDev
+        if (sources != null) {
+            copyIfChanged(sources.toPath(), dir.resolve(sourcesName))
+        }
+
+        xyz.wagyourtail.unimined.util.LocalMaven
+            .writePom(dir, mavenGroup, minecraftDepName, version, publishModuleMetadata)
+        if (publishModuleMetadata) {
+            xyz.wagyourtail.unimined.util.LocalMaven.writeModuleMetadata(
+                dir,
+                mavenGroup,
+                minecraftDepName,
+                version,
+                listOf(binaryName),
+                if (sources != null) sourcesName else null,
+            )
+        }
+    }
+
+    private fun copyIfChanged(
+        source: Path,
+        target: Path,
+    ) {
+        if (target.exists() && Files.getLastModifiedTime(source) <= Files.getLastModifiedTime(target) &&
+            Files.size(source) == Files.size(target)
+        ) {
+            return
+        }
+        Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
     }
 
     fun getMcDevFile(): Path {
