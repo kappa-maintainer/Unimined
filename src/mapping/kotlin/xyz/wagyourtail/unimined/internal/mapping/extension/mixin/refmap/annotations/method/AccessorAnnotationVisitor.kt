@@ -156,6 +156,12 @@ class AccessorAnnotationVisitor(
             if (targetNames.isNotEmpty()) {
                 noRefmapAcceptor(targetNames.first())
             }
+        } else {
+            // remap disabled (e.g. via @Mixin(remap = false)): write back the original
+            // target name(s) unchanged so the annotation is not left without a value
+            if (targetNames.isNotEmpty()) {
+                noRefmapAcceptor(targetNames.first())
+            }
         }
     }
 
