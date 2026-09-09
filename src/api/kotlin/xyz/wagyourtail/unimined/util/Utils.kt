@@ -31,6 +31,8 @@ import java.nio.file.*
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.*
+import java.util.jar.Attributes
+import java.util.jar.Manifest
 import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 import kotlin.io.path.*
@@ -573,6 +575,96 @@ fun Path.openZipFileSystem(args: Map<String, *> = mapOf<String, Any>()): FileSys
         }
     }
     return FileSystems.newFileSystem(URI.create("jar:${toUri()}"), args, null)
+}
+
+/**
+ * True when any entry matches [predicate]. Only the zip central directory is read, entry
+ * contents are not touched.
+ */
+fun Path.zipContainsEntryMatching(predicate: (String) -> Boolean): Boolean {
+    if (!exists()) return false
+    Files.newByteChannel(this).use { sbc ->
+        ZipFile.builder().setIgnoreLocalFileHeader(true).setSeekableByteChannel(sbc).get().use { zip ->
+            for (entry in zip.entries) {
+                if (!entry.isDirectory && predicate(entry.name)) return true
+            }
+        }
+    }
+    return false
+}
+
+/**
+ * True when the zip/jar contains JAR signature files directly under META-INF. Mojang has
+ * signed the official minecraft client jar since 26.2 (`META-INF/MOJANGCS.SF` + `.RSA`,
+ * SHA-384 digests), which makes any in-place modification of such a jar fail with
+ * `SecurityException: SHA-384 digest error for ...` when the JVM lazily verifies the
+ * modified entry (e.g. while Knot loads the class).
+ */
+fun Path.zipHasJarSignature(): Boolean =
+    zipContainsEntryMatching { name ->
+        name.startsWith("META-INF/") &&
+            (name.endsWith(".SF") || name.endsWith(".RSA") || name.endsWith(".DSA") || name.endsWith(".EC") ||
+                name.substringAfterLast('/').startsWith("SIG-"))
+    }
+
+/**
+ * Remove the JAR signature from an already open mutable zip filesystem: delete the signature
+ * files and drop the manifest signature version + per-entry digests. Mirror of what
+ * tiny-remapper's `MetaInfFixer` does for remap outputs, for jars that are copied and patched
+ * in place without a full remap pass.
+ */
+fun FileSystem.stripJarSignatures() {
+    val metaInf = rootDirectories.first().resolve("META-INF")
+    val deleted = mutableListOf<String>()
+    if (Files.isDirectory(metaInf)) {
+        Files.newDirectoryStream(metaInf).use { stream ->
+            for (path in stream) {
+                if (Files.isRegularFile(path)) {
+                    val name = path.fileName.toString()
+                    if (name.startsWith("SIG-") || name.endsWith(".SF") || name.endsWith(".RSA") ||
+                        name.endsWith(".DSA") || name.endsWith(".EC")
+                    ) {
+                        Files.delete(path)
+                        deleted.add(name)
+                    }
+                }
+            }
+        }
+    }
+    if (deleted.isEmpty()) return
+
+    // rewrite MANIFEST.MF without Signature-Version and per-entry digests, otherwise the
+    // manifest still references signature sections that no longer exist
+    val manifestPath = metaInf.resolve("MANIFEST.MF")
+    if (Files.isRegularFile(manifestPath)) {
+        val manifest = Files.newInputStream(manifestPath).use { Manifest(it) }
+        manifest.mainAttributes.remove(Attributes.Name.SIGNATURE_VERSION)
+        val entries = manifest.entries.values.iterator()
+        while (entries.hasNext()) {
+            val attrs = entries.next()
+            val digestKeys = attrs.keys.filter { key ->
+                val name = key.toString()
+                name.endsWith("-Digest") || name.contains("-Digest-") || name == "Magic"
+            }
+            for (key in digestKeys) attrs.remove(key)
+            if (attrs.isEmpty()) entries.remove()
+        }
+        Files.delete(manifestPath)
+        Files.newOutputStream(manifestPath).use { manifest.write(it) }
+    }
+}
+
+/**
+ * Remove the JAR signature from this jar in place, but only if it has one (cheap central
+ * directory check first). Official minecraft jars are signed since 26.2, so every tool that
+ * copies them and rewrites entries must run this before the jar is used on a runtime
+ * classpath, otherwise the JVM rejects the modified entries at class-load time.
+ */
+fun Path.stripJarSignaturesIfPresent() {
+    if (!zipHasJarSignature()) return
+    openZipFileSystem(mapOf("mutable" to true)).use { fs ->
+        fs.stripJarSignatures()
+    }
 }
 
 val CONSTANT_TIME_FOR_ZIP_ENTRIES = GregorianCalendar(1980, Calendar.FEBRUARY, 1, 0, 0, 0).timeInMillis

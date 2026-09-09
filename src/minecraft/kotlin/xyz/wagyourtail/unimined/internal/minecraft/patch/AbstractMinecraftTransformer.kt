@@ -212,6 +212,12 @@ abstract class AbstractMinecraftTransformer protected constructor(
             Files.copy(minecraft.path, target.path, StandardCopyOption.REPLACE_EXISTING)
             target.path.openZipFileSystem(mapOf("mutable" to true)).use { out ->
                 transform.forEach { it(out) }
+                // the source may be an official jar signed by Mojang (26.2+); the in-place
+                // patches above invalidate its signature, which would make the JVM reject
+                // every touched class at load time. strip the signature so the jar can be
+                // used as-is (e.g. when the remap pass is skipped because the namespace
+                // already matches).
+                out.stripJarSignatures()
             }
         } catch (e: Exception) {
             target.path.deleteIfExists()

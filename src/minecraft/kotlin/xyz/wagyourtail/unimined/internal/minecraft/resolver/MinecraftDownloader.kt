@@ -162,6 +162,11 @@ open class MinecraftDownloader(val project: Project, open val provider: Minecraf
                 download(clientJar, clientPath)
             }
         }
+        // official jars are signed by Mojang since 26.2; any later in-place rewrite
+        // (patches, remap-skip paths, merge reuse) would otherwise trip JVM jar verification
+        // at class load. strip the signature here once, so every downstream consumer of the
+        // raw minecraft jar is safe. no-op on unsigned jars (cheap central-directory check).
+        clientPath.stripJarSignaturesIfPresent()
         MinecraftJar(
             mcVersionFolder,
             "minecraft",
@@ -242,6 +247,7 @@ open class MinecraftDownloader(val project: Project, open val provider: Minecraf
             }
             //TODO: possibly read library list in this case as well..., should be same as client tho so probably a waste
         } ?: serverPath
+        serverPath.stripJarSignaturesIfPresent()
 
         MinecraftJar(
             mcVersionFolder,
