@@ -200,6 +200,32 @@ class ModRemapProvider(
         }
     }
 
+    private val configByOriginalArtifactName by lazy {
+        val configs = mutableMapOf<String, Configuration>()
+        for (c in configurations) {
+            for (file in originalDepsFiles[c].values) {
+                configs.putIfAbsent(file.nameWithoutExtension, c)
+            }
+        }
+        configs
+    }
+
+    fun getConfigForFile(file: File, targetNamespace: Namespace): Configuration? {
+        remappedFilesToConfigurations[file.absoluteFile.normalize().path]?.let {
+            project.logger.debug("[Unimined/ModRemapper] {} is an output of {}", file, it)
+            return it
+        }
+        var name = file.nameWithoutExtension
+        if (name.endsWith("-mapped-$targetNamespace")) {
+            project.logger.debug("[Unimined/ModRemapper] $file is already mapped to $targetNamespace")
+            return null
+        }
+        name = name.substringBeforeLast("-mapped-", name)
+        return configByOriginalArtifactName[name]?.also {
+            project.logger.debug("[Unimined/ModRemapper] $file is an output of $it")
+        }
+    }
+
     private fun coordinatesFor(artifact: ResolvedArtifact): RemappedCoordinates {
         require(artifact.extension == null || artifact.extension == "jar") {
             "Remapped mod dependencies must be JARs: ${artifact.stringify()}"
@@ -275,16 +301,6 @@ class ModRemapProvider(
                 artifacts.forEach { resolved[it] = sourceFile }
             }
             resolved
-        }
-
-    fun getConfigForFile(file: File): Configuration? =
-        runBlocking {
-            val configuration = remappedFilesToConfigurations[file.absoluteFile.normalize().path]
-            configuration?.let {
-                project.logger.debug("[Unimined/ModRemapper] {} is an output of {}", file, it)
-                return@runBlocking it
-            }
-            null
         }
 
     private fun constructRemapper(
@@ -365,7 +381,6 @@ class ModRemapProvider(
                 mods.keys,
                 "the configured remap inputs",
             )
-            val mc = provider.getMinecraft(namespace)
             val forceReload = project.unimined.forceReload
             val targets =
                 mods.mapValues { mod ->
@@ -400,6 +415,7 @@ class ModRemapProvider(
                         "[Unimined/ModRemapper]  ${if (mod.value.second.second) "skipping" else "        "} ${mod.value.first} -> ${mod.value.second.first}",
                     )
                 }
+                val mc = provider.getMinecraft(namespace)
                 val remapper = constructRemapper(namespace, devNamespace, mc)
                 val tags = preRemapInternal(remapper, targets)
                 mods.clear()
