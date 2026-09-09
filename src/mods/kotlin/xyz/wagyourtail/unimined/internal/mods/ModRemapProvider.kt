@@ -210,7 +210,10 @@ class ModRemapProvider(
         configs
     }
 
-    fun getConfigForFile(file: File, targetNamespace: Namespace): Configuration? {
+    fun getConfigForFile(
+        file: File,
+        targetNamespace: Namespace,
+    ): Configuration? {
         remappedFilesToConfigurations[file.absoluteFile.normalize().path]?.let {
             project.logger.debug("[Unimined/ModRemapper] {} is an output of {}", file, it)
             return it
@@ -368,7 +371,11 @@ class ModRemapProvider(
                 return@runBlocking
             }
             project.logger.lifecycle("[Unimined/ModRemapper] Found $count mods for remapping")
-            project.logger.info("[Unimined/ModRemapper] publishModuleMetadata=$publishModuleMetadata (ivy repos: ${project.repositories.filterIsInstance<org.gradle.api.artifacts.repositories.IvyArtifactRepository>().map { it.name + " -> " + it.url }})")
+            project.logger.info(
+                "[Unimined/ModRemapper] publishModuleMetadata=$publishModuleMetadata (ivy repos: ${project.repositories.filterIsInstance<org.gradle.api.artifacts.repositories.IvyArtifactRepository>().map {
+                    it.name + " -> " + it.url
+                }})",
+            )
             project.logger.info("[Unimined/ModRemapper] remapAtToLegacy: $remapAtToLegacy")
             project.logger.info("[Unimined/ModRemapper] mixinRemap: $mixinRemap")
 
@@ -482,7 +489,10 @@ class ModRemapProvider(
                             Files.copy(file.toPath(), mainJar, StandardCopyOption.REPLACE_EXISTING)
                         } catch (e: Exception) {
                             mainJar.deleteIfExists()
-                            throw IllegalStateException("Failed to mirror remapped ${coordinates.group}:${coordinates.module}:${coordinates.version} under main artifact name $mainJar", e)
+                            throw IllegalStateException(
+                                "Failed to mirror remapped ${coordinates.group}:${coordinates.module}:${coordinates.version} under main artifact name $mainJar",
+                                e,
+                            )
                         }
                     }
                 }
@@ -517,7 +527,9 @@ class ModRemapProvider(
                                 "${coordinates.group}:${coordinates.module}:${coordinates.version}$classifierSuffix",
                             ).also { dependency ->
                                 (dependency as? ExternalModuleDependency)?.isTransitive = false
-                                project.logger.info("[Unimined/ModRemapper]   supplying ${coordinates.group}:${coordinates.module}:${coordinates.version}$classifierSuffix to ${c.name} (publishModuleMetadata=$publishModuleMetadata, classifierSuffix='$classifierSuffix')")
+                                project.logger.info(
+                                    "[Unimined/ModRemapper]   supplying ${coordinates.group}:${coordinates.module}:${coordinates.version}$classifierSuffix to ${c.name} (publishModuleMetadata=$publishModuleMetadata, classifierSuffix='$classifierSuffix')",
+                                )
                             },
                     )
                 }
@@ -796,9 +808,13 @@ class ModRemapProvider(
             coordinates.moduleMetadata.toFile().writeText(
                 GsonBuilder().setPrettyPrinting().create().toJson(moduleMetadata),
             )
-            project.logger.info("[Unimined/ModRemapper]   wrote module metadata ${coordinates.moduleMetadata} with binaries $binaryNames (sourceExists=$sourceExists)")
+            project.logger.info(
+                "[Unimined/ModRemapper]   wrote module metadata ${coordinates.moduleMetadata} with binaries $binaryNames (sourceExists=$sourceExists)",
+            )
         } else {
-            project.logger.info("[Unimined/ModRemapper]   pom-only component ${coordinates.group}:${coordinates.module}:${coordinates.version}; no .module written")
+            project.logger.info(
+                "[Unimined/ModRemapper]   pom-only component ${coordinates.group}:${coordinates.module}:${coordinates.version}; no .module written",
+            )
         }
     }
 
