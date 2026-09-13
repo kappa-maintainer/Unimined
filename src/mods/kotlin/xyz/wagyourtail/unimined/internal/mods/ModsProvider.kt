@@ -29,10 +29,37 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
     }
 
     /**
-     * Classpath-only companion to [modImplementation]: dependencies declared here are added to the
-     * mod compile/runtime classpath exactly as declared, but are never remapped and never copied
-     * into the modTransform repository. Use this for language/toolchain libraries (Scala runtime,
-     * ASM, ...) that a mod needs on the classpath but that never reference Minecraft classes.
+     * Companion to [modImplementation] for mods that are **already in the dev namespace**, most
+     * commonly jars published with a `dev` classifier (for example
+     * `com.cleanroommc:scalar:1.0.0:dev`).
+     *
+     * Dependencies declared here are added to the mod compile/runtime classpath exactly as
+     * declared, are never remapped and are never copied into the modTransform repository. They are
+     * nonetheless still treated as mods: they are part of [getClasspath], so a loader that builds
+     * its own realm hands them to the mod classloader and to mod discovery instead of leaving them
+     * behind on the application classpath.
+     *
+     * Plain libraries that only need to be on the classpath (a language runtime, ASM, ...) do not
+     * need this configuration and should use the regular `implementation`, `compileOnly` or
+     * `runtimeOnly` configurations — those are never remapped either.
+     *
+     * On loaders that build no realm of their own (Fabric, Forge) this is behaviourally equivalent to
+     * `implementation`: there the jar only has to sit on the compile/runtime classpath, and mods are
+     * discovered from that classpath anyway. Cleanroom's `crl.dev.extrapath` is the one place where
+     * the distinction between a mod and a library is observable today.
+     */
+    val modDevImplementation = project.configurations.maybeCreate("modDevImplementation".withSourceSet(minecraft.sourceSet)).also {
+        minecraft.sourceSet.apply {
+            compileClasspath += it
+            runtimeClasspath += it
+        }
+    }
+
+    /**
+     * Former name of [modDevImplementation], kept as an alias so existing builds keep working.
+     *
+     * Deprecated because "library" described the wrong use case: the artifacts that actually need
+     * this configuration are dev-namespace mods, not libraries.
      */
     val modLibrary = project.configurations.maybeCreate("modLibrary".withSourceSet(minecraft.sourceSet)).also {
         minecraft.sourceSet.apply {
@@ -89,6 +116,12 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
     }
 
     fun afterEvaluate() {
+        if (modLibrary.dependencies.isNotEmpty()) {
+            project.logger.warn(
+                "[Unimined/Mods ${project.path}:${minecraft.sourceSet.name}] the `modLibrary` configuration is " +
+                    "deprecated, rename it to `modDevImplementation` (it is an alias, so nothing else changes).",
+            )
+        }
         for ((config, action) in remapConfigs) {
             val remapSettings = ModRemapProvider(config, project, minecraft)
             for (c in config) {
@@ -100,7 +133,17 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
     }
 
     override fun getClasspath(): Set<File> {
-        return remapConfigsResolved.keys.flatMap { it.resolve() }.toSet()
+        // [modDevImplementation] entries are never remapped, but they are still mods, so they belong
+        // in the same set as the remapped mods. A loader that builds its own realm needs them there:
+        // Cleanroom's crl.dev.extrapath puts every entry on LaunchClassLoader *and* into
+        // LibraryManager.getCandidates(), which is exactly where CleanroomModDiscoverer looks for
+        // mods. Leaving them out means a dev-classifier mod jar is loaded by the application
+        // classloader instead and is never discovered as a mod at all.
+        return (
+            remapConfigsResolved.keys.flatMap { it.resolve() } +
+                modDevImplementation.resolve() +
+                modLibrary.resolve()
+        ).toSet()
     }
 
     override fun getClasspathAs(namespace: Namespace, classpath: Set<File>): Set<File> {

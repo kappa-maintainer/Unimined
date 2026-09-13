@@ -137,7 +137,14 @@ open class UniminedExtensionImpl(
         return minecrafts.keys.find { it.name == sourceSetName } ?: throw IllegalArgumentException("no source set found for $sourceSetName")
     }
 
-    override val modsRemapRepo =
+    /**
+     * Registered lazily: the URL is derived from the cache, and the cache depends on
+     * `unimined.useGlobalCache`, which the build script can only set *after* the plugin has been
+     * applied — while reading the cache finalizes that property. An eager registration here would
+     * therefore make `unimined.useGlobalCache = …` fail with "Cannot set finalized property".
+     * It is forced in the `init` block's afterEvaluate, before anything can resolve `remapped_*`.
+     */
+    override val modsRemapRepo by lazy {
         project.repositories.maven {
             it.name = "modsRemap"
             // modTransform uses a Maven-like directory layout:
@@ -150,6 +157,7 @@ open class UniminedExtensionImpl(
                 it.includeGroupByRegex("remapped_.*")
             }
         }
+    }
 
     /**
      * The global local Maven repository (under [getGlobalCache]) where the final Minecraft
@@ -157,8 +165,10 @@ open class UniminedExtensionImpl(
      * file-mapping repositories it replaces) keeps the project free of ivy repositories, so
      * IDEA uses its modern auxiliary-artifact resolver and sources attach automatically via
      * the sourcesElements variant of the Gradle Module Metadata.
+     *
+     * Registered lazily for the same reason as [modsRemapRepo] and forced next to it.
      */
-    override val uniminedMaven =
+    override val uniminedMaven by lazy {
         project.repositories.maven {
             it.name = "uniminedMaven"
             it.url = getGlobalCache().resolve("maven").toUri()
@@ -167,6 +177,7 @@ open class UniminedExtensionImpl(
                 it.includeGroup("net.minecraft")
             }
         }
+    }
 
     val minecraftForgeMaven by lazy {
         project.repositories.maven {
@@ -616,13 +627,21 @@ open class UniminedExtensionImpl(
             }
         }
         project.repositories.all { repo ->
-            if (repo != modsRemapRepo) {
+            // Compared by name rather than by identity: reading the property here would force the
+            // lazy registration from inside the repository container's own iteration.
+            if (repo.name != "modsRemap") {
                 repo.content {
                     it.excludeGroupByRegex("remapped_.+")
                 }
             }
         }
         project.afterEvaluate {
+            // Force the two synthetic repositories now that the build script has had its chance to
+            // set `unimined.useGlobalCache`, but before anything below resolves `remapped_*` or
+            // `net.minecraft` coordinates (see [modsRemapRepo]).
+            arrayOf(modsRemapRepo, uniminedMaven).forEach { repo ->
+                project.logger.debug("[Unimined] repository {} -> {}", repo.name, repo.url)
+            }
             afterEvaluate()
         }
     }

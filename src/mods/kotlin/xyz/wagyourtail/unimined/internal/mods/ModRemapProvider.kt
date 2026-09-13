@@ -126,12 +126,17 @@ class ModRemapProvider(
         defaultedMapOf<Configuration, Map<ResolvedArtifact, File>> {
             val detached = project.configurations.detachedConfiguration().apply(this@ModRemapProvider.config)
             detached.dependencies.addAll(originalDeps[it])
-            // Only remap directly-declared mods; transitive dependencies (language/toolchain
-            // libraries like the Scala runtime) stay on the classpath as the original jars and
-            // are never pulled into the remap scope or the modTransform repository. Mods that do
-            // need such libraries declared on the mod classpath can add them via the `modLibrary`
-            // configuration, which is classpath-only and never remapped.
-            detached.isTransitive = false
+            // This resolution must stay transitive. Its result is both the remap scope *and* the
+            // list of artifacts supplied back to the configuration ("supply back to proper
+            // configs" below), and that supply-back clears the configuration first — so anything
+            // missing here is removed from the classpath entirely, rather than being left
+            // unremapped.
+            //
+            // Bundle mods make this load-bearing: fabric-api's own jar contains zero classes,
+            // only fabric.mod.json plus META-INF/jars/*.jar, and its POM declares its ~43 modules
+            // as dependencies. Its API classes are therefore reachable *only* transitively, and
+            // dropping transitivity here surfaces as `package net.fabricmc.fabric.api.… does not
+            // exist` in the consuming project. Do not set isTransitive = false.
             val resolved = mutableMapOf<ResolvedArtifact, File>()
             project.logger.info("[Unimined/ModRemapper] Original Dep Files: $it")
             for (r in detached.resolvedConfiguration.resolvedArtifacts) {

@@ -14,11 +14,13 @@ abstract class ModRemapConfig(val configurations: Set<Configuration>) {
 
     /**
      * Exclude resolved artifacts from being remapped by module coordinates. Matches on the
-     * module group and/or module name; either may be null to act as a wildcard. Excluded
-     * artifacts are skipped during remap, are not published to the modTransform repository and
-     * are not supplied back to any configuration — they stay on the classpath as the original
-     * (unremapped) jars, which is the right choice for language/toolchain libraries such as the
-     * Scala runtime that never reference Minecraft classes.
+     * module group and/or module name; either may be null to act as a wildcard.
+     *
+     * Excluded artifacts are dropped from the mod classpath entirely: they are not remapped, not
+     * published to the modTransform repository and not supplied back to the configuration. If such
+     * an artifact is still needed, declare it explicitly rather than excluding it — in the
+     * `modDevImplementation` configuration when it is a dev-namespace mod, or in a regular
+     * `implementation` / `compileOnly` / `runtimeOnly` configuration when it is a plain library.
      *
      * @param group exclude every module in this group, or null to match any group
      * @param module exclude this exact module name, or null to match any module

@@ -79,5 +79,16 @@ abstract class ModsConfig {
         classpath: Set<File>
     ): Set<File>
 
+    /**
+     * The mod classpath: every jar that came from a mod configuration, i.e. the `modImplementation`
+     * artifacts (remapped into the dev namespace) plus the `modDevImplementation` entries, which are
+     * already dev-namespace and are therefore never remapped. Regular `implementation`, `compileOnly`
+     * and `runtimeOnly` dependencies are not part of it.
+     *
+     * Loaders that build their own realm use this to tell mods apart from ordinary libraries, so any
+     * new consumer has to include everything that must be handed over to that realm — Cleanroom
+     * turns the returned files into `crl.dev.extrapath`, which puts each entry on
+     * `LaunchClassLoader` *and* into its mod-candidate set.
+     */
     abstract fun getClasspath(): Set<File>
 }

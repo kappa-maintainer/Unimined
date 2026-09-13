@@ -15,7 +15,7 @@ unimined.useGlobalCache = true
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
 
     withSourcesJar()
@@ -41,12 +41,55 @@ unimined.minecraft {
     }
 
     cleanroom {
-        loader "0.6.8-alpha"
+        loader "0.6.13-alpha"
     }
 }
 
-dependencies {
+// Regression anchor for `modDevImplementation`: entries declared through it are mods that are
+// already in the dev namespace, so they must never be remapped but must still be handed to
+// Cleanroom through `crl.dev.extrapath` — Cleanroom discovers mods from
+// LibraryManager.getCandidates(), which is fed by that property, so a dev-classifier mod jar that
+// does not show up there stays on the application classpath and is never loaded as a mod.
+// The jars are produced locally so the anchor needs no extra repository.
+def anchorDevMod = tasks.register('anchorDevModJar', Jar) {
+    archiveFileName = 'unimined-anchor-devmod.jar'
+    destinationDirectory = layout.buildDirectory.dir('anchor')
 }
+
+// Control for the check below: a plain `implementation` jar is not a mod, so it has to stay on the
+// run classpath. Without this the assertion would also pass if every entry were dumped into the
+// property unconditionally.
+def anchorControl = tasks.register('anchorControlJar', Jar) {
+    archiveFileName = 'unimined-anchor-control.jar'
+    destinationDirectory = layout.buildDirectory.dir('anchor')
+}
+dependencies {
+    modDevImplementation files(anchorDevMod)
+    implementation files(anchorControl)
+}
+
+// The run configs are registered lazily, so the Cleanroom run transform (and with it the value of
+// crl.dev.extrapath) is only computed once `runClient` is realized. See Cleanroom1_12_2Test.
+tasks.register('verifyDevExtraPath') {
+    group = 'verification'
+    dependsOn anchorDevMod, anchorControl
+    doLast {
+        def extraPathArg = tasks.named('runClient').get().jvmArgs.find {
+            it.startsWith('-Dcrl.dev.extrapath=')
+        }
+        if (extraPathArg == null) {
+            throw new GradleException('runClient does not set crl.dev.extrapath')
+        }
+        def entries = extraPathArg.substring('-Dcrl.dev.extrapath='.length()).tokenize(File.pathSeparator)
+        if (!entries.any { it.endsWith('unimined-anchor-devmod.jar') }) {
+            throw new GradleException("modDevImplementation jar is missing from crl.dev.extrapath: ${extraPathArg}")
+        }
+        if (entries.any { it.endsWith('unimined-anchor-control.jar') }) {
+            throw new GradleException("a plain implementation jar must not be in crl.dev.extrapath: ${extraPathArg}")
+        }
+    }
+}
+tasks.named('build') { dependsOn 'verifyDevExtraPath' }
 
 processResources {
     inputs.property "version", project.version
