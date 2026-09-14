@@ -138,13 +138,16 @@ open class UniminedExtensionImpl(
     }
 
     /**
-     * Registered lazily: the URL is derived from the cache, and the cache depends on
+     * Registered eagerly, because plugins may resolve `remapped_*` / `net.minecraft` coordinates
+     * during apply, before any afterEvaluate runs.
+     *
+     * The URL is provider-backed on purpose: it is derived from the cache, and the cache depends on
      * `unimined.useGlobalCache`, which the build script can only set *after* the plugin has been
-     * applied — while reading the cache finalizes that property. An eager registration here would
-     * therefore make `unimined.useGlobalCache = …` fail with "Cannot set finalized property".
-     * It is forced in the `init` block's afterEvaluate, before anything can resolve `remapped_*`.
+     * applied. Evaluating it eagerly would read (and finalize) that property here and make
+     * `unimined.useGlobalCache = …` fail with "Cannot set finalized property". A provider defers the
+     * read until the repository is actually used, by which point the script has run.
      */
-    override val modsRemapRepo by lazy {
+    override val modsRemapRepo =
         project.repositories.maven {
             it.name = "modsRemap"
             // modTransform uses a Maven-like directory layout:
@@ -152,12 +155,11 @@ open class UniminedExtensionImpl(
             // The synthetic .module declares apiElements/runtimeElements (remapped dev jar) and
             // sourcesElements, so both binary resolution and IDEA's SourcesArtifact query resolve
             // against declared variants instead of classifier conventions.
-            it.url = getLocalCache().resolve("modTransform").toUri()
+            it.setUrl(project.provider { getLocalCache().resolve("modTransform").toUri() })
             it.content {
                 it.includeGroupByRegex("remapped_.*")
             }
         }
-    }
 
     /**
      * The global local Maven repository (under [getGlobalCache]) where the final Minecraft
@@ -166,18 +168,17 @@ open class UniminedExtensionImpl(
      * IDEA uses its modern auxiliary-artifact resolver and sources attach automatically via
      * the sourcesElements variant of the Gradle Module Metadata.
      *
-     * Registered lazily for the same reason as [modsRemapRepo] and forced next to it.
+     * Registered eagerly with a provider-backed URL for the same reason as [modsRemapRepo].
      */
-    override val uniminedMaven by lazy {
+    override val uniminedMaven =
         project.repositories.maven {
             it.name = "uniminedMaven"
-            it.url = getGlobalCache().resolve("maven").toUri()
+            it.setUrl(project.provider { getGlobalCache().resolve("maven").toUri() })
             it.content {
                 // Only Unimined-published synthetic components live here.
                 it.includeGroup("net.minecraft")
             }
         }
-    }
 
     val minecraftForgeMaven by lazy {
         project.repositories.maven {
@@ -627,21 +628,13 @@ open class UniminedExtensionImpl(
             }
         }
         project.repositories.all { repo ->
-            // Compared by name rather than by identity: reading the property here would force the
-            // lazy registration from inside the repository container's own iteration.
-            if (repo.name != "modsRemap") {
+            if (repo != modsRemapRepo) {
                 repo.content {
                     it.excludeGroupByRegex("remapped_.+")
                 }
             }
         }
         project.afterEvaluate {
-            // Force the two synthetic repositories now that the build script has had its chance to
-            // set `unimined.useGlobalCache`, but before anything below resolves `remapped_*` or
-            // `net.minecraft` coordinates (see [modsRemapRepo]).
-            arrayOf(modsRemapRepo, uniminedMaven).forEach { repo ->
-                project.logger.debug("[Unimined] repository {} -> {}", repo.name, repo.url)
-            }
             afterEvaluate()
         }
     }
