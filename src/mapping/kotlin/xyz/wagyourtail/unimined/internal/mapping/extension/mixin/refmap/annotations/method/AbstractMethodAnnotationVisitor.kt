@@ -5,6 +5,7 @@ import net.fabricmc.tinyremapper.extension.mixin.common.data.AnnotationElement
 import net.fabricmc.tinyremapper.extension.mixin.common.data.Constant
 import org.objectweb.asm.AnnotationVisitor
 import xyz.wagyourtail.unimined.internal.mapping.extension.mixin.refmap.RefmapBuilderClassVisitor
+import xyz.wagyourtail.unimined.internal.mapping.extension.ownerOfMemberReference
 import xyz.wagyourtail.unimined.internal.mapping.extension.splitMethodNameAndDescriptor
 import xyz.wagyourtail.unimined.util.orElseOptional
 import java.util.*
@@ -67,41 +68,49 @@ abstract class AbstractMethodAnnotationVisitor(
                 }
                 val wildcard = targetMethod.endsWith("*")
                 val (targetName, targetDescs) = getTargetNameAndDescs(targetMethod, wildcard)
-                val targetClasses = if (targetName.startsWith("L") && targetName.contains(";")) {
-                    val tc = targetName.substring(1, targetName.indexOf(";"))
-                    if (tc !in targetClasses) {
-                        logger.warn("Target class $tc not in target classes for mixin $mixinName, this seems wrong!")
+                val qualifiedOwner = ownerOfMemberReference(targetName)
+                val targetClasses = if (qualifiedOwner != null) {
+                    if (qualifiedOwner !in targetClasses) {
+                        logger.warn("Target class $qualifiedOwner not in target classes for mixin $mixinName, this seems wrong!")
                     }
-                    setOf(tc)
+                    setOf(qualifiedOwner)
                 } else {
                     this.targetClasses
                 }
+                // The entry a refmap has for an owner-qualified selector (Loom writes those as
+                // `L<owner>;<name><desc>`) carries its owner in the mod's prod namespace (intermediary),
+                // which is the namespace the mapping tree knows. The owner written in the selector itself
+                // is in the mod's `named` namespace (yarn), which the tree cannot resolve, so resolve
+                // against the refmap's owner instead of leaving the selector untranslated.
+                val existing = existingMappings[targetMethod]
+                val existingOwner = if (qualifiedOwner != null) ownerOfMemberReference(existing ?: "") else null
                 for (targetDesc in targetDescs) {
                     var implicitWildcard = targetDesc == null && allowImplicitWildcards
                     for (targetClass in targetClasses) {
+                        val resolveClass = existingOwner ?: targetClass
                         val target = resolver.resolveMethod(
-                            targetClass,
+                            resolveClass,
                             targetName.substringAfter(";"),
                             targetDesc,
                             (if (wildcard || implicitWildcard) ResolveUtility.FLAG_FIRST else ResolveUtility.FLAG_UNIQUE) or ResolveUtility.FLAG_RECURSIVE
                         ).orElseOptional {
-                            existingMappings[targetMethod]?.let { existing ->
-                                logger.info("Remapping using existing mapping for $targetMethod: $existing")
-                                if (existing.endsWith("*")) {
-                                    val mname = existing.substringAfter(";").let { it.substring(0, it.length - 1 ) }
+                            existing?.let { existingEntry ->
+                                logger.info("Remapping using existing mapping for $targetMethod: $existingEntry")
+                                if (existingEntry.endsWith("*")) {
+                                    val mname = existingEntry.substringAfter(";").let { it.substring(0, it.length - 1 ) }
                                     resolver.resolveMethod(
-                                        targetClass,
+                                        resolveClass,
                                         mname,
                                         null,
                                         ResolveUtility.FLAG_FIRST or ResolveUtility.FLAG_RECURSIVE
                                     )
                                 } else {
-                                    val (mName, mDesc) = splitMethodNameAndDescriptor(existing)
+                                    val (mName, mDesc) = splitMethodNameAndDescriptor(existingEntry)
                                     if (mDesc == null && allowImplicitWildcards) {
                                         implicitWildcard = true
                                     }
                                     resolver.resolveMethod(
-                                        targetClass,
+                                        resolveClass,
                                         mName,
                                         mDesc,
                                         (if (implicitWildcard) ResolveUtility.FLAG_FIRST else ResolveUtility.FLAG_UNIQUE) or ResolveUtility.FLAG_RECURSIVE
@@ -110,9 +119,9 @@ abstract class AbstractMethodAnnotationVisitor(
                             } ?: Optional.empty()
                         }
                         target.ifPresent { targetVal ->
-                            val mappedClass = resolver.resolveClass(targetClass)
+                            val mappedClass = resolver.resolveClass(resolveClass)
                                 .map { mapper.mapName(it) }
-                                .orElse(targetClass)
+                                .orElse(resolveClass)
                             val mappedName = mapper.mapName(targetVal)
                             val mappedDesc = /* if (implicitWildcard) "" else */  if (wildcard && mappedName != "<clinit>") "*" else mapper.mapDesc(targetVal)
                             if (targetClasses.size > 1) {
@@ -130,9 +139,9 @@ abstract class AbstractMethodAnnotationVisitor(
                             // name is provided
                             val mappedDesc = mapper.asTrRemapper().mapMethodDesc(targetDesc)
                             if (mappedDesc != targetDesc) {
-                                val mappedClass = resolver.resolveClass(targetClass)
+                                val mappedClass = resolver.resolveClass(resolveClass)
                                     .map { mapper.mapName(it) }
-                                    .orElse(targetClass)
+                                    .orElse(resolveClass)
                                 val mappedPrefix = if (targetClasses.size > 1) "L$mappedClass;*" else "*"
                                 refmap.addProperty(targetMethod, "$mappedPrefix$mappedDesc")
                                 noRefmapAcceptor("$mappedPrefix$mappedDesc")

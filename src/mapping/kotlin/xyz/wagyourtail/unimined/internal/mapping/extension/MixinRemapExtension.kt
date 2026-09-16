@@ -53,6 +53,8 @@ class MixinRemapExtension(
     var off by FinalizeOnRead(false)
     var noRefmap: Set<String> by FinalizeOnRead(setOf())
 
+    private val enabledExtensions = mutableSetOf<String>()
+
     @ApiStatus.Internal
     fun modifyMetadataReader(modifier: (MixinRemapExtension) -> MixinMetadata) {
         metadataReader.add(modifier)
@@ -84,16 +86,19 @@ class MixinRemapExtension(
     }
 
     override fun enableMixinExtra() {
+        enabledExtensions.add("MixinExtra")
         modifyRefmapBuilder(MixinExtra::refmapBuilder)
     }
 
     override fun enableBaseMixin() {
+        enabledExtensions.add("BaseMixin")
         modifyMetadataReader(::OfficialMixinMetaData)
         modifyHardRemapper(BaseMixinHard::hardRemapper)
         modifyRefmapBuilder(BaseMixinRefmap::refmapBuilder)
     }
 
     override fun enableJarModAgent() {
+        enabledExtensions.add("JarModAgent")
         modifyMetadataReader(::JarModAgentMetaData)
         modifyHardRemapper(JMAHard::hardRemapper)
         modifyRefmapBuilder(JMARefmap::refmapBuilder)
@@ -115,10 +120,24 @@ class MixinRemapExtension(
     override fun reset() {
         off = false
         noRefmap = setOf()
+        enabledExtensions.clear()
         resetMetadataReader()
         resetHardRemapper()
         resetRefmapBuilder()
     }
+
+    /**
+     * A stable description of everything about this configuration that changes the remapping output.
+     * Cached remapped mods are only valid for the settings they were produced with, so this is part
+     * of the cache key (see `ModRemapProvider`).
+     *
+     * Only call this on a throwaway instance (or after the options are final): it reads the
+     * [FinalizeOnRead] properties and therefore freezes them.
+     */
+    @ApiStatus.Internal
+    fun settingsFingerprint(): String =
+        "off=$off,noRefmap=${noRefmap.sorted()},extensions=${enabledExtensions.sorted()}," +
+            "implicitWildcards=$allowImplicitWildcards"
 
 
     open class MixinTarget(override val inputTag: InputTag, val extension: MixinRemapExtension) : InputTagExtension {

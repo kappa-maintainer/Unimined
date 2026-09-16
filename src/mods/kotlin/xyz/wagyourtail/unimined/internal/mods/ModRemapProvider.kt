@@ -39,6 +39,8 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
 import kotlin.io.path.name
+import kotlin.io.path.readText
+import kotlin.io.path.writeText
 
 class ModRemapProvider(
     config: Set<Configuration>,
@@ -362,6 +364,45 @@ class ModRemapProvider(
         tinyRemapSettings = remapperBuilder
     }
 
+    /**
+     * Bump this whenever the remap output changes shape for a given configuration — for example when
+     * a fix changes how mixins are remapped. Cached remapped mods are keyed by the configuration that
+     * produced them, so this is what makes an Unimined upgrade re-remap instead of silently reusing
+     * the previous behaviour's output.
+     */
+    private val remapCacheFormat = 2
+
+    /**
+     * Everything that changes the bytes of a remapped mod: the cache format, the namespace pair, the
+     * mappings content, and the mixin remap settings. Without this a build that switches mappings (or
+     * turns mixin remapping on/off) kept serving the jars produced with the old settings, which looks
+     * exactly like "the fix did nothing".
+     */
+    private suspend fun remapFingerprint(devNamespace: Namespace): String {
+        // The mixin options are applied to a fresh extension at remap time, so run them against a
+        // throwaway one to find out what they are now.
+        val mixinOptions = MixinRemapExtension(project.logger, allowImplicitWildcards = true)
+            .also {
+                it.enableBaseMixin()
+                mixinRemap(it)
+            }
+            .settingsFingerprint()
+        return "v$remapCacheFormat;$namespace->$devNamespace;${provider.mappings.combinedNames()};$mixinOptions"
+    }
+
+    private fun fingerprintFile(binary: Path): Path =
+        binary.resolveSibling(".${binary.fileName}.unimined-fingerprint")
+
+    private fun Path.hasCurrentFingerprint(fingerprint: String): Boolean {
+        val file = fingerprintFile(this)
+        return file.exists() && file.readText() == fingerprint
+    }
+
+    private fun writeRemapFingerprint(binary: Path, fingerprint: String) {
+        if (!binary.isValidJarCache()) return
+        fingerprintFile(binary).writeText(fingerprint)
+    }
+
     fun doRemap(
         devNamespace: Namespace = provider.mappings.devNamespace,
         targetConfigurations: Map<Configuration, Configuration> = defaultedMapOf { it },
@@ -394,6 +435,7 @@ class ModRemapProvider(
                 "the configured remap inputs",
             )
             val forceReload = project.unimined.forceReload
+            val fingerprint = remapFingerprint(devNamespace)
             val targets =
                 mods.mapValues { mod ->
                     val coordinates = coordinatesFor(mod.key)
@@ -409,7 +451,12 @@ class ModRemapProvider(
                             ] = configuration
                         }
                     }
-                    mod.value to coordinates.binary.let { it to (it.isValidJarCache() && !forceReload) }
+                    // The input jar is part of the key too: a re-published snapshot resolves to the
+                    // same coordinates but different content.
+                    val inputFingerprint = "$fingerprint;in=${mod.value.length()}-${mod.value.lastModified()}"
+                    mod.value to coordinates.binary.let {
+                        it to (it.isValidJarCache() && !forceReload && it.hasCurrentFingerprint(inputFingerprint))
+                    }
                 }
             project.logger.info("[Unimined/ModRemapper] Remapping Mods: ")
             if (targets.values.none { !it.second.second }) {
@@ -441,6 +488,14 @@ class ModRemapProvider(
                 mods.putAll(
                     tags.join().filterValues { it == null }.mapValues { targets[it.key]!!.second.first.toFile() },
                 )
+
+                for (target in targets.values) {
+                    val input = target.first
+                    writeRemapFingerprint(
+                        target.second.first,
+                        "$fingerprint;in=${input.length()}-${input.lastModified()}",
+                    )
+                }
             }
 
             // Remove a source artifact left by an earlier resolution if the current
@@ -489,7 +544,15 @@ class ModRemapProvider(
                 val mainName = "${coordinates.module}-${coordinates.version}.${coordinates.extension}"
                 if (fileName != mainName) {
                     val mainJar = coordinates.directory.resolve(mainName)
-                    if (project.unimined.forceReload || !mainJar.isValidJarCache()) {
+                    // Keep the mirror in lockstep with the classified jar: an existence-only check
+                    // would leave the legacy name serving the previous remap's content.
+                    val input = targets[artifact]?.first
+                    val mirrorFingerprint = input?.let {
+                        "$fingerprint;in=${it.length()}-${it.lastModified()}"
+                    }
+                    if (project.unimined.forceReload || !mainJar.isValidJarCache() ||
+                        (mirrorFingerprint != null && !mainJar.hasCurrentFingerprint(mirrorFingerprint))
+                    ) {
                         try {
                             Files.copy(file.toPath(), mainJar, StandardCopyOption.REPLACE_EXISTING)
                         } catch (e: Exception) {
@@ -498,6 +561,9 @@ class ModRemapProvider(
                                 "Failed to mirror remapped ${coordinates.group}:${coordinates.module}:${coordinates.version} under main artifact name $mainJar",
                                 e,
                             )
+                        }
+                        if (mirrorFingerprint != null) {
+                            writeRemapFingerprint(mainJar, mirrorFingerprint)
                         }
                     }
                 }

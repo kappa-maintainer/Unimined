@@ -52,6 +52,19 @@ abstract class FabricLikeMinecraftTransformer(
 
     companion object {
         val GSON: Gson = GsonBuilder().setPrettyPrinting().create()
+
+        /**
+         * The namespaces Fabric mod jars express their mixin selectors in: the `named` side of the
+         * `named:intermediary` refmaps Loom generates. Yarn is the one that occurs in practice; the
+         * other entries are the names Unimined gives the same mapping (`named` is what yarn's own
+         * mappings call it, `yarnv1`/`legacyYarn` are the older variants of it).
+         */
+        private val modMixinNamespaces = setOf(
+            Namespace("named"),
+            Namespace("yarn"),
+            Namespace("yarnv1"),
+            Namespace("legacyYarn"),
+        )
     }
 
     override var accessWidener: File? by FinalizeOnRead(null)
@@ -235,10 +248,31 @@ abstract class FabricLikeMinecraftTransformer(
             provider.sourceSet.runtimeClasspath += project.files(devMappings!!)
         }
 
-        // mixins get remapped at runtime, so we don't need to on fabric
+        // Mixins of Fabric mods are written against yarn: Loom keeps the class references in
+        // intermediary and the injection selectors in the `named` namespace, together with a
+        // `named:intermediary` refmap. Fabric Loader's dev remapper only translates intermediary ->
+        // dev, so while the project's dev namespace is yarn nothing needs to happen here. With any
+        // other dev namespace (mojmap, official, mcp, ...) nothing translates those selectors and
+        // every selector that names its owner explicitly (`@Inject(method = "Lnet/minecraft/...;foo()V")`)
+        // fails Mixin's "specifies a target class ... which is not supported" check: the owner stays
+        // named while the mixin's target class has been remapped into the dev namespace.
+        //
+        // So remap the mixins ourselves in that case, reading the intermediary form out of the mod's
+        // own refmap and writing the dev namespace form straight into the annotations. `disableRefmap`
+        // keeps them self-contained: nothing is left for the runtime to translate, which is what makes
+        // this work in a dev namespace Fabric Loader has no refmap remapping for.
         provider.mods.default {
             mixinRemap {
-                off()
+                // Unobfuscated Minecraft never has its mods remapped (see [ModsProvider.afterEvaluate]),
+                // so leave the default alone there rather than resolving mappings for nothing.
+                if (!provider.obfuscated || provider.mappings.devNamespace in modMixinNamespaces) {
+                    off()
+                } else {
+                    // Note: no `reset()` here — the extension this runs on has just been set up with
+                    // BaseMixin by the mod remapper, and resetting would throw that away again.
+                    // `off` is only ever set by the call above, so this reliably stays enabled.
+                    disableRefmap()
+                }
             }
         }
 
