@@ -37,13 +37,16 @@ abstract class AbstractRemapJarTaskImpl @Inject constructor(@get:Internal val pr
         val inputFile = provider.mcPatcher.beforeRemapJarTask(this, inputFile.get().asFile.toPath())
 
         if (devNs == prodNs) {
-            project.logger.lifecycle("[Unimined/RemapJar ${this.path}] detected empty remap path, jumping to after remap tasks")
-            provider.mcPatcher.afterRemapJarTask(this, inputFile)
-            afterRemap(inputFile)
-            return
+            // dev and prod namespaces are the same, so no names actually need to change.
+            // we still have to run the full remap pipeline though: remapping rewrites the class files
+            // (constant pool order, MethodParameters, ...), and the sibling loaders of this project do
+            // remap their jar. skipping here would make this jar byte-different from theirs for every
+            // single class, which makes jar-merging tools (e.g. Forgix) treat all of them as
+            // loader-specific and relocate/rewrite them.
+            project.logger.lifecycle("[Unimined/RemapJar ${this.path}] detected empty remap path ($devNs -> $prodNs), running identity remap to stay byte-compatible with remapped siblings")
+        } else {
+            project.logger.lifecycle("[Unimined/RemapJar ${this.path}] remapping output ${inputFile.name} from $devNs to $prodNs")
         }
-
-        project.logger.lifecycle("[Unimined/RemapJar ${this.path}] remapping output ${inputFile.name} from $devNs to $prodNs")
         val prodMapped = temporaryDir.toPath().resolve("${inputFile.nameWithoutExtension}-temp-${prodNs}.jar")
         prodMapped.deleteIfExists()
 
