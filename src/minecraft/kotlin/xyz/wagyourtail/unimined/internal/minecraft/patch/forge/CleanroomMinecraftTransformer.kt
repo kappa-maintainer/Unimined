@@ -28,6 +28,7 @@ import java.nio.file.FileSystem
 import java.nio.file.Path
 import kotlin.io.path.absolutePathString
 import kotlin.io.path.createDirectories
+import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.mcpconfig.MCPConfig
 
 open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftProvider) : ForgeLikeMinecraftTransformer(project, provider, "Cleanroom"),
     CleanroomPatcher<JarModMinecraftTransformer> {
@@ -62,7 +63,8 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
         "com.ibm.icu:icu4j-core-mojang:",
         "net.java.jutils:",
         "org.lwjgl.lwjgl:",
-        "io.netty:netty-all:"
+        "io.netty:netty-all:",
+        "net.java.jinput:jinput-platform:"
     )
 
     override fun addMavens() {
@@ -85,7 +87,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
             if (provider.version != "1.12.2") {
                 throw IllegalStateException("Cleanroom only supports 1.12.2")
             }
-            project.dependencies.create("com.cleanroommc:cleanroom:${dep}:universal@jar")
+            project.dependencies.create("top.outlands:outlands:${dep}@jar")
         } else {
             project.dependencies.create(dep)
         }.apply(action))
@@ -100,7 +102,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
 
         val forgeDep = forge.dependencies.first()
 
-        if (forgeDep.group != "com.cleanroommc" || forgeDep.name != "cleanroom") {
+        if (forgeDep.group != "top.outlands" || forgeDep.name != "outlands") {
             throw IllegalStateException("Invalid cleanroom dependency found, if you are using multiple dependencies in the forge configuration, make sure the last one is the forge dependency!")
         }
     }
@@ -119,7 +121,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
         mainClass = json.get("mainClass").asString
         val args = json.get("minecraftArguments").asString
         provider.addLibraries(libraries.filter {
-            !it.name.startsWith("com.cleanroommc:cleanroom:")
+            !it.name.startsWith("top.outlands:outlands:")
         })
         tweakClassClient = args.split("--tweakClass")[1].trim().substringBefore(" ")
     }
@@ -226,7 +228,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
         config.javaVersion = JavaVersion.VERSION_25
     }
 
-    class CleanroomFG3(project: Project, parent: CleanroomMinecraftTransformer): FG3MinecraftTransformer(project, parent) {
+    class CleanroomFG3(project: Project, private val crParent: CleanroomMinecraftTransformer): FG3MinecraftTransformer(project, crParent) {
 
         override val transform: MutableList<(FileSystem) -> Unit> = listOf<(FileSystem) -> Unit>(
             FixParamAnnotations::apply,
@@ -234,6 +236,51 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
 
         // override binpatches.pack.lzma meaning it's `userdev3`
         override val userdevClassifier: String = "userdev"
+
+        /**
+         * Cleanroom keeps its 543 patches in mcp names (upstream runs with `srgPatches = false`), but the mcp_config
+         * pipeline produces srg-named sources. Rename once before patching instead of regenerating the patch set.
+         */
+        override fun patchBase(config: MCPConfig): String {
+            val base = config.finalStepName()
+            val srg2source = listOf("net.minecraftforge:Srg2Source:8.0.9:fatjar")
+            // The patches loaded from the userdev jar are written in mcp names, but the mcp_config pipeline produces
+            // srg sources, so the tree is renamed before they are applied. srg -> mcp is a plain lookup, and
+            // Srg2Source wants the range map of the tree it renames, which '--extract' produces in a first step.
+            config.addStep(
+                config.FunctionStep(
+                    "srgRangeMap",
+                    base,
+                    mutableMapOf("input" to { config.getResultFor(base).output!!.absolutePathString() }),
+                    MCPConfig.Function(
+                        srg2source,
+                        null,
+                        listOf("--extract", "--in", "{input}", "--out", "{output}"),
+                        listOf(),
+                        javaVersion = 17,
+                    ),
+                ),
+            )
+            config.addStep(
+                config.FunctionStep(
+                    "srgToMcp",
+                    "srgRangeMap",
+                    mutableMapOf(
+                        "srcRoot" to { config.getResultFor(base).output!!.absolutePathString() },
+                        "range" to { config.getResultFor("srgRangeMap").output!!.absolutePathString() },
+                        "mappings" to { crParent.srgToMCPAsTSRG.absolutePathString() },
+                    ),
+                    MCPConfig.Function(
+                        srg2source,
+                        null,
+                        listOf("--apply", "--in", "{srcRoot}", "--out", "{output}", "--map", "{mappings}", "--range", "{range}"),
+                        listOf(),
+                        javaVersion = 17,
+                    ),
+                ),
+            )
+            return "srgToMcp"
+        }
 
     }
 

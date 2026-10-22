@@ -22,6 +22,7 @@ java {
 }
 
 repositories {
+    mavenLocal()
     maven {
         name = "wagyourtail releases"
         url = "https://maven.wagyourtail.xyz/releases"
@@ -31,6 +32,14 @@ repositories {
         url = "https://repo.spongepowered.org/maven"
     }
     mavenCentral()
+    maven {
+        name = "outlands"
+        url = "https://maven.outlands.top/releases"
+    }
+    maven {
+        name = "forge"
+        url = "https://maven.minecraftforge.net/"
+    }
 }
 
 unimined.minecraft {
@@ -41,7 +50,7 @@ unimined.minecraft {
     }
 
     cleanroom {
-        loader "0.6.13-alpha"
+        loader "0.6.13-alpha+build.25"
     }
 }
 

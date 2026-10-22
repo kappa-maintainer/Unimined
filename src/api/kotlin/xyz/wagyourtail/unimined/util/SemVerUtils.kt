@@ -3,7 +3,8 @@ package xyz.wagyourtail.unimined.util
 
 @Suppress("UNUSED")
 object SemVerUtils {
-    private val semverPattern = Regex("^(\\d+)(\\.(\\d+)(\\.(\\d+))?)?(-(\\w+)(.(\\d+))?)?(\\+([0-9a-zA-Z-.]+))?$")
+    // also accepts versions with more than the usual 3 numeric components, as mojang/neoforge use those now (e.g. `26.2.0.1`)
+    private val semverPattern = Regex("^(\\d+)(\\.(\\d+)(\\.(\\d+))?)?(-(\\w+)(.(\\d+))?)?(\\+([0-9a-zA-Z-.]+))?((\\.(\\d+))+)?$")
     fun isSemVer(s: String): Boolean {
         return semverPattern.matches(s)
     }
@@ -12,7 +13,7 @@ object SemVerUtils {
         return SemVerMatcher.matcher(pattern).matches(SemVer.create(semVer))
     }
 
-    data class SemVer(val major: Int, val minor: Int, val patch: Int, val prerelease: String?, val build: String?) {
+    data class SemVer(val major: Int, val minor: Int, val patch: Int, val prerelease: String?, val build: String?, val extra: List<Int> = emptyList()) {
         /**
          * @return 1 if this is greater than other, -1 if other is greater than this, 0 if they are equal
          */
@@ -32,9 +33,28 @@ object SemVerUtils {
             if (patch > other.patch) {
                 return 1
             }
-            return if (patch < other.patch) {
-                -1
+            if (patch < other.patch) {
+                return -1
+            }
+            val extraCompare = compareExtra(other)
+            return if (extraCompare != 0) {
+                extraCompare
             } else preReleaseCompare(other)
+        }
+
+        /**
+         * compares the additional numeric components, e.g. the build number of `26.2.0.1`.
+         * missing components count as 0, so `26.2.0.1` is greater than `26.2.0`
+         */
+        fun compareExtra(other: SemVer): Int {
+            for (i in 0 until maxOf(extra.size, other.extra.size)) {
+                val first = extra.getOrElse(i) { 0 }
+                val second = other.extra.getOrElse(i) { 0 }
+                if (first != second) {
+                    return if (first > second) 1 else -1
+                }
+            }
+            return 0
         }
 
         fun preReleaseCompare(other: SemVer): Int {
@@ -102,7 +122,8 @@ object SemVerUtils {
                 val patch = if (matcher.groups[5]?.value == null) 0 else matcher.groups[5]?.value?.toInt()!!
                 val prerelease = matcher.groups[7]?.value
                 val build = matcher.groups[9]?.value
-                return SemVer(major, minor, patch, prerelease, build)
+                val extra = matcher.groups[12]?.value?.split(".")?.filter { it.isNotEmpty() }?.map { it.toInt() } ?: emptyList()
+                return SemVer(major, minor, patch, prerelease, build, extra)
             }
         }
     }

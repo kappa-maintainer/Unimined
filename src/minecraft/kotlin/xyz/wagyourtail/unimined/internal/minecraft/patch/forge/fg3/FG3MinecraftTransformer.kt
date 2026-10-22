@@ -400,6 +400,8 @@ open class FG3MinecraftTransformer(
         configuration.getFiles(mcpConfig, "zip").singleFile
     }
 
+    open fun patchBase(config: MCPConfig): String = config.finalStepName()
+
     val mcpConfigRunner by lazy {
         MCPConfig(
             mcpConfigFile.toPath(),
@@ -421,13 +423,18 @@ open class FG3MinecraftTransformer(
                 mapOf(),
             )
 
+            // Where the loader's own patch set starts from. Forge patches in srg names, but a loader may keep its
+            // patches in mcp names (Cleanroom does: it runs with 'srgPatches = false' upstream), so the branch point
+            // is delegated and the default stays "whatever the config produces last".
+            val patchBase = patchBase(config)
+
             config.addStep(
                 config.InjectStep(
                     "forgeInject",
-                    "patch",
+                    patchBase,
                     mutableMapOf(
                         "input" to {
-                            config.getResultFor("patch").output!!.absolutePathString()
+                            config.getResultFor(patchBase).output!!.absolutePathString()
                         },
                         "inject" to {
                             sources.absolutePathString()
@@ -493,9 +500,9 @@ open class FG3MinecraftTransformer(
                                                         .lines()
                                                         .map {
                                                             if (it.startsWith("--- $origin")) {
-                                                                "--- a/" + it.removePrefix("--- $origin")
+                                                                "--- a" + it.removePrefix("--- $origin")
                                                             } else if (it.startsWith("+++ $modified")) {
-                                                                "+++ b/" + it.removePrefix("+++ $modified")
+                                                                "+++ b" + it.removePrefix("+++ $modified")
                                                             } else {
                                                                 it
                                                             }

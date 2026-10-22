@@ -121,6 +121,8 @@ class MCPConfig(
         functions[name] = function
     }
 
+    private var finalStepNameCache: String? = null
+
     private val steps: MutableMap<String, ConfigStep> by lazy {
         mutableMapOf<String, ConfigStep>().apply {
             var prevStep: String? = null
@@ -219,10 +221,23 @@ class MCPConfig(
 
                 prevStep = name
             }
+            finalStepNameCache = prevStep
         }
     }
 
     fun getStep(step: String): ConfigStep = steps.getValue(step)
+
+    /**
+     * Name of the last configured step. Loader patch sets are applied by injected steps, and a config may append
+     * post-processing (for example the Cleanroom mcpcleanup 'process' step) after the MCP patches, so the loader
+     * patches have to start from whatever the config produces last, not from the hardcoded 'patch' step.
+     */
+    fun finalStepName(): String {
+        // force the parse so the cached name is populated, then return it; injected steps are added afterwards,
+        // so this stays the last step the config itself declares
+        steps
+        return finalStepNameCache ?: error("config declares no steps")
+    }
 
     fun insertBefore(
         nextStep: String,
