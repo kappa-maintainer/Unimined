@@ -242,40 +242,36 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
          * pipeline produces srg-named sources. Rename once before patching instead of regenerating the patch set.
          */
         override fun patchBase(config: MCPConfig): String {
+            // The patches are authored against the tree the config produces *before* the cleanup step: mcpcleanup
+            // rewraps long lines, which breaks the context lines of every patch that touches a long signature.
             val base = config.finalStepName()
-            val srg2source = listOf("net.minecraftforge:Srg2Source:8.0.9:fatjar")
-            // The patches loaded from the userdev jar are written in mcp names, but the mcp_config pipeline produces
-            // srg sources, so the tree is renamed before they are applied. srg -> mcp is a plain lookup, and
-            // Srg2Source wants the range map of the tree it renames, which '--extract' produces in a first step.
-            config.addStep(
-                config.FunctionStep(
-                    "srgRangeMap",
-                    base,
-                    mutableMapOf("input" to { config.getResultFor(base).output!!.absolutePathString() }),
-                    MCPConfig.Function(
-                        srg2source,
-                        null,
-                        listOf("--extract", "--in", "{input}", "--out", "{output}"),
-                        listOf(),
-                        javaVersion = 17,
-                    ),
-                ),
-            )
+            // The loader patches are written in mcp names, but the mcp_config pipeline runs with the 'stable' channel,
+            // which is srg names. Renaming srg -> mcp on sources is exactly what the mavenizer does for the vanilla
+            // tree, so its cli is reused here instead of any hand written resolution (srg -> mcp is a plain lookup,
+            // the reverse direction would need ast analysis and does not exist anywhere in the stack).
+            val csv =
+                project.configurations
+                    .detachedConfiguration(
+                        project.dependencies.create(
+                            project.findProperty("outlands.mcpMappings")?.toString()
+                                ?: "de.oceanlabs.mcp:mcp_stable:39-1.12@zip",
+                        ),
+                    ).apply { isTransitive = false }
+                    .singleFile
             config.addStep(
                 config.FunctionStep(
                     "srgToMcp",
-                    "srgRangeMap",
+                    base,
                     mutableMapOf(
-                        "srcRoot" to { config.getResultFor(base).output!!.absolutePathString() },
-                        "range" to { config.getResultFor("srgRangeMap").output!!.absolutePathString() },
-                        "mappings" to { crParent.srgToMCPAsTSRG.absolutePathString() },
+                        "input" to { config.getResultFor(base).output!!.absolutePathString() },
+                        "mappings" to { csv.absolutePath },
                     ),
                     MCPConfig.Function(
-                        srg2source,
-                        null,
-                        listOf("--apply", "--in", "{srcRoot}", "--out", "{output}", "--map", "{mappings}", "--range", "{range}"),
+                        listOf("top.outlands:minecraft-mavenizer:0.5.22-cr3"),
+                        "net.minecraftforge.mcmaven.impl.tasks.RenameSourcesCli",
+                        listOf("--mappings", "{mappings}", "--in", "{input}", "--out", "{output}"),
                         listOf(),
-                        javaVersion = 17,
+                        javaVersion = 25,
                     ),
                 ),
             )

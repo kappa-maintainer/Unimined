@@ -50,7 +50,7 @@ unimined.minecraft {
     }
 
     cleanroom {
-        loader "0.6.13-alpha+build.25"
+        loader "0.6.13-alpha+build.29"
     }
 }
 
