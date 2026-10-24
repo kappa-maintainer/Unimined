@@ -1,6 +1,6 @@
 [versions]
 # Kotlin 2.2.0 is only supported by Gradle 9+. Gradle 9 removes support for Java 8.
-kotlin = "2.4.0"
+kotlin = "2.4.21"
 dokka = "2.1.0"
 
 jb-annotations = "26.1.0"
