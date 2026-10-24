@@ -12,6 +12,7 @@ import xyz.wagyourtail.unimined.api.minecraft.patch.bukkit.SpigotPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.fabric.FabricLikePatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.fabric.LegacyFabricPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.CleanroomPatcher
+import xyz.wagyourtail.unimined.api.minecraft.patch.forge.OutlandsPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.ForgeLikePatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.MinecraftForgePatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.NeoForgedPatcher
@@ -345,6 +346,40 @@ interface PatchProviders {
      */
     fun cleanroom() {
         cleanroom {}
+    }
+
+    /**
+     * enables the Outlands patcher: the 1.12.2 loader that is published as `top.outlands:outlands`.
+     *
+     * This is not the cleanroom patcher. Cleanroom resolved its loader through the ForgeGradle 6 style userdev
+     * chain, Outlands publishes a materialized dev environment (classes, srg classes, sources, mappings), so the
+     * two keep separate transformers instead of one class guessing which loader it was given.
+     */
+    fun outlands() {
+        outlands {}
+    }
+
+    /**
+     * enables the Outlands patcher.
+     * @param action the action to configure the patcher.
+     */
+    fun outlands(action: OutlandsPatcher<*>.() -> Unit)
+
+    /**
+     * enables the Outlands patcher.
+     * @param action the action to configure the patcher.
+     */
+    fun outlands(
+        @DelegatesTo(
+            value = OutlandsPatcher::class,
+            strategy = Closure.DELEGATE_FIRST
+        ) action: Closure<*>
+    ) {
+        outlands {
+            action.delegate = this
+            action.resolveStrategy = Closure.DELEGATE_FIRST
+            action.call()
+        }
     }
 
     /**

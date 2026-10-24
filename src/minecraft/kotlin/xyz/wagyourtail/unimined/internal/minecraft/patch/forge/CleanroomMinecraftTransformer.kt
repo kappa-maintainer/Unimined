@@ -2,8 +2,6 @@ package xyz.wagyourtail.unimined.internal.minecraft.patch.forge
 
 import com.google.gson.JsonObject
 import kotlinx.coroutines.runBlocking
-import org.apache.commons.lang3.ArchUtils
-import org.apache.commons.lang3.SystemUtils
 import org.gradle.api.JavaVersion
 import org.gradle.api.Project
 import org.gradle.api.artifacts.Dependency
@@ -15,20 +13,15 @@ import xyz.wagyourtail.unimined.internal.mapping.task.ExportMappingsTaskImpl
 import xyz.wagyourtail.unimined.internal.minecraft.MinecraftProvider
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.FG3MinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.jarmod.JarModMinecraftTransformer
-import xyz.wagyourtail.unimined.internal.minecraft.resolver.Library
 import xyz.wagyourtail.unimined.internal.minecraft.resolver.parseAllLibraries
-import xyz.wagyourtail.unimined.internal.minecraft.transform.fixes.FixParamAnnotations
 import xyz.wagyourtail.unimined.util.FinalizeOnRead
 import xyz.wagyourtail.unimined.util.LazyMutable
 import xyz.wagyourtail.unimined.util.getFiles
 import xyz.wagyourtail.unimined.mapping.formats.tsrg.TsrgV1Writer
 import java.io.File
-import java.net.URI
-import java.nio.file.FileSystem
 import java.nio.file.Path
 import kotlin.io.path.absolutePathString
 import kotlin.io.path.createDirectories
-import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.mcpconfig.MCPConfig
 
 open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftProvider) : ForgeLikeMinecraftTransformer(project, provider, "Cleanroom"),
     CleanroomPatcher<JarModMinecraftTransformer> {
@@ -36,7 +29,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
     override var forgeTransformer: JarModMinecraftTransformer by FinalizeOnRead(CleanroomFG3(project, this))
 
     init {
-        atDependency = project.dependencies.create("top.outlands:accesstransformers:8.3.0")
+        atDependency = project.dependencies.create("net.minecraftforge:accesstransformers:8.1.6")
         atMainClass = "net.minecraftforge.accesstransformer.TransformerProcessor"
     }
 
@@ -57,29 +50,10 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
         }
     })
 
-    private val vanillaExcludesSet = setOf(
-        "com.mojang:patchy:",
-        "oshi-project:oshi-core:",
-        "com.ibm.icu:icu4j-core-mojang:",
-        "net.java.jutils:",
-        "org.lwjgl.lwjgl:",
-        "io.netty:netty-all:",
-        "net.java.jinput:jinput-platform:"
-    )
-
     override fun addMavens() {
-        project.repositories.mavenLocal()
         project.unimined.cleanroomRepos()
-        project.unimined.arcseekersMaven()
+        project.unimined.outlandsMaven()
         project.unimined.minecraftForgeMaven()
-        project.repositories.removeIf { it.name == "minecraft" }
-        project.repositories.maven { repo ->
-            repo.name = "minecraft"
-            repo.url = URI.create("https://libraries.minecraft.net/")
-            repo.content {
-                it.excludeGroup("ca.weblite")
-            }
-        }
     }
 
     override fun loader(dep: Any, action: Dependency.() -> Unit) {
@@ -87,7 +61,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
             if (provider.version != "1.12.2") {
                 throw IllegalStateException("Cleanroom only supports 1.12.2")
             }
-            project.dependencies.create("top.outlands:outlands:${dep}@jar")
+            project.dependencies.create("com.cleanroommc:cleanroom:${dep}:universal@jar")
         } else {
             project.dependencies.create(dep)
         }.apply(action))
@@ -102,7 +76,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
 
         val forgeDep = forge.dependencies.first()
 
-        if (forgeDep.group != "top.outlands" || forgeDep.name != "outlands") {
+        if (forgeDep.group != "com.cleanroommc" || forgeDep.name != "cleanroom") {
             throw IllegalStateException("Invalid cleanroom dependency found, if you are using multiple dependencies in the forge configuration, make sure the last one is the forge dependency!")
         }
     }
@@ -121,65 +95,9 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
         mainClass = json.get("mainClass").asString
         val args = json.get("minecraftArguments").asString
         provider.addLibraries(libraries.filter {
-            !it.name.startsWith("top.outlands:outlands:")
+            !it.name.startsWith("com.cleanroommc:cleanroom:")
         })
         tweakClassClient = args.split("--tweakClass")[1].trim().substringBefore(" ")
-    }
-
-    override fun libraryFilter(library: Library): Library? {
-        if (vanillaExcludesSet.any { library.name.startsWith(it) }) {
-            return null
-        }
-        if (library.name.startsWith("org.lwjgl") && library.name.substringAfterLast(":").startsWith("2")) {
-            return null
-        }
-        if (library.name.startsWith("net.java.dev.jna:platform:")) {
-            return null
-        }
-        if (library.name.startsWith("org.apache.httpcomponents:")) {
-            return null
-        }
-        if (library.name.startsWith("ore.lwjgl:") && library.name.split(":").size > 3) {
-            if (library.name.split(":")[3] != getLwjglClassifier()) {
-                return null
-            }
-        }
-        if (library.name.startsWith("ca.weblite:java-objc-bridge:")) {
-            return library.copy(natives = emptyMap())
-        }
-        return super.libraryFilter(library)
-    }
-
-    private fun getLwjglClassifier(): String {
-        val processor = ArchUtils.getProcessor()
-        var classifier = ""
-        if (SystemUtils.IS_OS_WINDOWS) {
-            classifier += "windows"
-            if (processor.isAarch64) {
-                classifier += "-arm64"
-            } else if (processor.is32Bit) {
-                classifier += "-x86"
-            }
-        } else if (SystemUtils.IS_OS_LINUX) {
-            classifier += "linux"
-            if (processor.isAarch64) {
-                classifier += "-arm64"
-            } else if (processor.isRISCV) {
-                classifier += "-riscv64"
-            } else if (processor.isPPC) {
-                classifier += "-ppc64le"
-            } else if (!processor.isX86) {
-                classifier += "-arm32"
-            }
-        } else if (SystemUtils.IS_OS_MAC) {
-            classifier += "macos"
-            if (!processor.isX86) {
-                classifier += "-arm64"
-            }
-        } else if (SystemUtils.IS_OS_FREE_BSD) {
-            classifier = "freebsd"
-        }
-        return classifier
     }
 
     override fun applyClientRunTransform(config: RunConfig) {
@@ -187,22 +105,7 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
         config.properties["mcp_to_srg"] = {
             srgToMCPAsTSRG.absolutePathString()
         }
-        val modClassPath = provider.mods.getClasspath()
-        val extraPath = mutableSetOf<File>()
-        project.logger.info("Path before: {}", config.classpath.files.toString())
-        project.logger.info("Mod paths: {}", modClassPath.toString())
-        config.classpath = config.classpath.filter { 
-            if (it.isDirectory || modClassPath.contains(it)) {
-                extraPath += it
-                false
-            } else {
-                true
-            }
-        }
-        project.logger.info("Path after: {}", config.classpath.files.toString())
-        project.logger.info("Extra mod paths: {}", extraPath.toString())
-        config.jvmArgs("-Dcrl.dev.extrapath=${extraPath.joinToString(File.pathSeparator) { it.absolutePath }}")
-        config.javaVersion = JavaVersion.VERSION_25
+        config.javaVersion = JavaVersion.VERSION_21
     }
 
     override fun applyServerRunTransform(config: RunConfig) {
@@ -210,73 +113,13 @@ open class CleanroomMinecraftTransformer(project: Project, provider: MinecraftPr
         config.properties["mcp_to_srg"] = {
             srgToMCPAsTSRG.absolutePathString()
         }
-        val modClassPath = provider.mods.getClasspath()
-        val extraPath = mutableSetOf<File>()
-        project.logger.info("Path before: {}", config.classpath.files.toString())
-        project.logger.info("Mod paths: {}", modClassPath.toString())
-        config.classpath = config.classpath.filter {
-            if (it.isDirectory || modClassPath.contains(it)) {
-                extraPath += it
-                false
-            } else {
-                true
-            }
-        }
-        project.logger.info("Path after: {}", config.classpath.files.toString())
-        project.logger.info("Extra mod paths: {}", extraPath.toString())
-        config.jvmArgs("-Dcrl.dev.extrapath=${extraPath.joinToString(File.pathSeparator) { it.absolutePath }}")
-        config.javaVersion = JavaVersion.VERSION_25
+        config.javaVersion = JavaVersion.VERSION_21
     }
 
     class CleanroomFG3(project: Project, private val crParent: CleanroomMinecraftTransformer): FG3MinecraftTransformer(project, crParent) {
 
-        override val transform: MutableList<(FileSystem) -> Unit> = listOf<(FileSystem) -> Unit>(
-            FixParamAnnotations::apply,
-        ).toMutableList()
-
         // override binpatches.pack.lzma meaning it's `userdev3`
         override val userdevClassifier: String = "userdev"
-
-        /**
-         * Cleanroom keeps its 543 patches in mcp names (upstream runs with `srgPatches = false`), but the mcp_config
-         * pipeline produces srg-named sources. Rename once before patching instead of regenerating the patch set.
-         */
-        override fun patchBase(config: MCPConfig): String {
-            // The patches are authored against the tree the config produces *before* the cleanup step: mcpcleanup
-            // rewraps long lines, which breaks the context lines of every patch that touches a long signature.
-            val base = config.finalStepName()
-            // The loader patches are written in mcp names, but the mcp_config pipeline runs with the 'stable' channel,
-            // which is srg names. Renaming srg -> mcp on sources is exactly what the mavenizer does for the vanilla
-            // tree, so its cli is reused here instead of any hand written resolution (srg -> mcp is a plain lookup,
-            // the reverse direction would need ast analysis and does not exist anywhere in the stack).
-            val csv =
-                project.configurations
-                    .detachedConfiguration(
-                        project.dependencies.create(
-                            project.findProperty("outlands.mcpMappings")?.toString()
-                                ?: "de.oceanlabs.mcp:mcp_stable:39-1.12@zip",
-                        ),
-                    ).apply { isTransitive = false }
-                    .singleFile
-            config.addStep(
-                config.FunctionStep(
-                    "srgToMcp",
-                    base,
-                    mutableMapOf(
-                        "input" to { config.getResultFor(base).output!!.absolutePathString() },
-                        "mappings" to { csv.absolutePath },
-                    ),
-                    MCPConfig.Function(
-                        listOf("top.outlands:minecraft-mavenizer:0.5.22-cr3"),
-                        "net.minecraftforge.mcmaven.impl.tasks.RenameSourcesCli",
-                        listOf("--mappings", "{mappings}", "--in", "{input}", "--out", "{output}"),
-                        listOf(),
-                        javaVersion = 25,
-                    ),
-                ),
-            )
-            return "srgToMcp"
-        }
 
     }
 

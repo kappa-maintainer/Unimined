@@ -23,6 +23,7 @@ import xyz.wagyourtail.unimined.api.minecraft.MinecraftJar
 import xyz.wagyourtail.unimined.api.minecraft.patch.bukkit.PaperPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.fabric.LegacyFabricPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.CleanroomPatcher
+import xyz.wagyourtail.unimined.api.minecraft.patch.forge.OutlandsPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.liteloader.LiteLoaderPatcher
 import xyz.wagyourtail.unimined.internal.minecraft.patch.access.transformer.AccessTransformerMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.access.widener.AccessWidenerMinecraftTransformer
@@ -31,6 +32,7 @@ import xyz.wagyourtail.unimined.internal.minecraft.patch.bukkit.SpigotMinecraftT
 import xyz.wagyourtail.unimined.internal.minecraft.patch.bukkit.PaperMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.fabric.*
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.CleanroomMinecraftTransformer
+import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.OutlandsMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.MinecraftForgeMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.NeoForgedMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.jarmod.JarModAgentMinecraftTransformer
@@ -173,6 +175,12 @@ class MergedMinecraftTransformer(project: Project, provider: MinecraftProvider):
         val cleanroom = CleanroomMinecraftTransformer(project, provider)
         cleanroom.action()
         patchers.add(cleanroom)
+    }
+
+    override fun outlands(action: OutlandsPatcher<*>.() -> Unit) {
+        val outlands = OutlandsMinecraftTransformer(project, provider)
+        outlands.action()
+        patchers.add(outlands)
     }
 
     override fun jarMod(action: JarModAgentPatcher.() -> Unit) {

@@ -27,6 +27,7 @@ import xyz.wagyourtail.unimined.api.minecraft.patch.bukkit.SpigotPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.fabric.FabricLikePatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.fabric.LegacyFabricPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.CleanroomPatcher
+import xyz.wagyourtail.unimined.api.minecraft.patch.forge.OutlandsPatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.ForgeLikePatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.MinecraftForgePatcher
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.NeoForgedPatcher
@@ -49,6 +50,7 @@ import xyz.wagyourtail.unimined.internal.minecraft.patch.bukkit.PaperMinecraftTr
 import xyz.wagyourtail.unimined.internal.minecraft.patch.bukkit.SpigotMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.fabric.*
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.CleanroomMinecraftTransformer
+import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.OutlandsMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.ForgeLikeMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.MinecraftForgeMinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.NeoForgedMinecraftTransformer
@@ -355,6 +357,15 @@ open class MinecraftProvider(
             CleanroomMinecraftTransformer(project, this).also {
                 patcherAction = {
                     action(it as CleanroomPatcher<*>)
+                }
+            }
+    }
+
+    override fun outlands(action: OutlandsPatcher<*>.() -> Unit) {
+        mcPatcher =
+            OutlandsMinecraftTransformer(project, this).also {
+                patcherAction = {
+                    action(it as OutlandsPatcher<*>)
                 }
             }
     }
