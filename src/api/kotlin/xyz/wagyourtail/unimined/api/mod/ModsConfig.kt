@@ -87,7 +87,7 @@ abstract class ModsConfig {
      *
      * Loaders that build their own realm use this to tell mods apart from ordinary libraries, so any
      * new consumer has to include everything that must be handed over to that realm — Cleanroom
-     * turns the returned files into `crl.dev.extrapath`, which puts each entry on
+     * turns the returned files into `outlands.dev.extrapath`, which puts each entry on
      * `LaunchClassLoader` *and* into its mod-candidate set.
      */
     abstract fun getClasspath(): Set<File>

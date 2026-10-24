@@ -7,14 +7,17 @@ import org.apache.commons.lang3.SystemUtils
 import org.gradle.api.JavaVersion
 import org.gradle.api.Project
 import org.gradle.api.artifacts.Dependency
+import org.gradle.api.file.FileCollection
 import org.jetbrains.annotations.ApiStatus
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.OutlandsPatcher
+import xyz.wagyourtail.unimined.api.minecraft.MinecraftJar
 import xyz.wagyourtail.unimined.api.runs.RunConfig
 import xyz.wagyourtail.unimined.api.unimined
 import xyz.wagyourtail.unimined.internal.mapping.task.ExportMappingsTaskImpl
 import xyz.wagyourtail.unimined.internal.minecraft.MinecraftProvider
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.FG3MinecraftTransformer
 import xyz.wagyourtail.unimined.internal.minecraft.patch.jarmod.JarModMinecraftTransformer
+import xyz.wagyourtail.unimined.mapping.EnvType
 import xyz.wagyourtail.unimined.internal.minecraft.resolver.Library
 import xyz.wagyourtail.unimined.internal.minecraft.resolver.parseAllLibraries
 import xyz.wagyourtail.unimined.internal.minecraft.transform.fixes.FixParamAnnotations
@@ -23,9 +26,11 @@ import xyz.wagyourtail.unimined.util.LazyMutable
 import xyz.wagyourtail.unimined.util.getFiles
 import xyz.wagyourtail.unimined.mapping.formats.tsrg.TsrgV1Writer
 import java.io.File
+import java.nio.file.Files
 import java.net.URI
 import java.nio.file.FileSystem
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import kotlin.io.path.absolutePathString
 import kotlin.io.path.createDirectories
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.mcpconfig.MCPConfig
@@ -66,6 +71,30 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
         "io.netty:netty-all:",
         "net.java.jinput:jinput-platform:"
     )
+
+    /**
+     * Consume the dev environment the loader publishes instead of rebuilding it: `-srg` is the tree this build
+     * compiles against (patched Minecraft + loader, srg names) and `-dev-sources` its sources. Both are the result of
+     * the chain the old path runs here (mcp_config -> decompile -> 543 patches -> rename to mcp), so using them only
+     * skips work. Set `-Poutlands.materializedDev=false` to fall back to that chain.
+     */
+    val materializedDev: Boolean =
+        project.findProperty("outlands.materializedDev")?.toString()?.toBoolean() ?: true
+
+    private fun loaderArtifact(classifier: String, extension: String): File {
+        val forgeDep = forge.dependencies.first()
+        val deps = project.configurations.detachedConfiguration()
+        val dependency =
+            project.dependencies.create("${forgeDep.group}:${forgeDep.name}:${forgeDep.version}:$classifier@$extension")
+        deps.dependencies.add(dependency)
+        return deps.getFiles(dependency).singleFile
+    }
+
+    /** The published srg-named classes (patched Minecraft + loader). */
+    val srgClassesJar: File by lazy { loaderArtifact("srg", "jar") }
+
+    /** The published mcp-named sources, including the patched Minecraft tree. */
+    val devSourcesJar: File by lazy { loaderArtifact("dev-sources", "jar") }
 
     override fun addMavens() {
         project.unimined.outlandsMaven()
@@ -199,7 +228,7 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
         }
         project.logger.info("Path after: {}", config.classpath.files.toString())
         project.logger.info("Extra mod paths: {}", extraPath.toString())
-        config.jvmArgs("-Dcrl.dev.extrapath=${extraPath.joinToString(File.pathSeparator) { it.absolutePath }}")
+        config.jvmArgs("-Doutlands.dev.extrapath=${extraPath.joinToString(File.pathSeparator) { it.absolutePath }}")
         config.javaVersion = JavaVersion.VERSION_25
     }
 
@@ -222,7 +251,7 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
         }
         project.logger.info("Path after: {}", config.classpath.files.toString())
         project.logger.info("Extra mod paths: {}", extraPath.toString())
-        config.jvmArgs("-Dcrl.dev.extrapath=${extraPath.joinToString(File.pathSeparator) { it.absolutePath }}")
+        config.jvmArgs("-Doutlands.dev.extrapath=${extraPath.joinToString(File.pathSeparator) { it.absolutePath }}")
         config.javaVersion = JavaVersion.VERSION_25
     }
 
@@ -234,6 +263,41 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
 
         // override binpatches.pack.lzma meaning it's `userdev3`
         override val userdevClassifier: String = "userdev"
+
+        /**
+         * The published jar already is the patched tree, so there is nothing to decompile or patch here. Everything
+         * downstream (srg -> mcp remap by Unimined, ATs of the mod, runs) is unchanged.
+         */
+        override fun transform(minecraft: MinecraftJar): MinecraftJar {
+            if (!olParent.materializedDev || minecraft.envType != EnvType.JOINED) return super.transform(minecraft)
+            project.logger.lifecycle("[Unimined/Outlands] using the loader's published classes (-srg) instead of running mcp_config")
+            val forgeDep = olParent.forge.dependencies.first()
+            return MinecraftJar(
+                parentPath = minecraft.parentPath,
+                name = "outlands",
+                envType = minecraft.envType,
+                version = forgeDep.version ?: "0",
+                patches = minecraft.patches + "materialized",
+                mappingNamespace = defaultProdNamespace(),
+                awOrAt = null,
+                path = olParent.srgClassesJar.toPath(),
+            )
+        }
+
+        override fun createSourcesJar(
+            classpath: FileCollection,
+            patchedJar: Path,
+            outputPath: Path,
+            linemappedPath: Path?,
+            side: EnvType,
+        ) {
+            if (!olParent.materializedDev || side != EnvType.JOINED) {
+                super.createSourcesJar(classpath, patchedJar, outputPath, linemappedPath, side)
+                return
+            }
+            project.logger.lifecycle("[Unimined/Outlands] using the loader's published sources (-dev-sources)")
+            Files.copy(olParent.devSourcesJar.toPath(), outputPath, StandardCopyOption.REPLACE_EXISTING)
+        }
 
         /**
          * Outlands keeps its 543 patches in mcp names (upstream runs with `srgPatches = false`), but the mcp_config

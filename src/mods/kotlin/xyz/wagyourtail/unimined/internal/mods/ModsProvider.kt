@@ -45,7 +45,7 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
      *
      * On loaders that build no realm of their own (Fabric, Forge) this is behaviourally equivalent to
      * `implementation`: there the jar only has to sit on the compile/runtime classpath, and mods are
-     * discovered from that classpath anyway. Cleanroom's `crl.dev.extrapath` is the one place where
+     * discovered from that classpath anyway. Cleanroom's `outlands.dev.extrapath` is the one place where
      * the distinction between a mod and a library is observable today.
      */
     val modDevImplementation = project.configurations.maybeCreate("modDevImplementation".withSourceSet(minecraft.sourceSet)).also {
@@ -135,7 +135,7 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
     override fun getClasspath(): Set<File> {
         // [modDevImplementation] entries are never remapped, but they are still mods, so they belong
         // in the same set as the remapped mods. A loader that builds its own realm needs them there:
-        // Cleanroom's crl.dev.extrapath puts every entry on LaunchClassLoader *and* into
+        // Cleanroom's outlands.dev.extrapath puts every entry on LaunchClassLoader *and* into
         // LibraryManager.getCandidates(), which is exactly where CleanroomModDiscoverer looks for
         // mods. Leaving them out means a dev-classifier mod jar is loaded by the application
         // classloader instead and is never discovered as a mod at all.
