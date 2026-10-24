@@ -99,6 +99,18 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
     override fun addMavens() {
         project.unimined.outlandsMaven()
         project.unimined.minecraftForgeMaven()
+        // Our own releases (and the loader's dependency set: cleanmix, mixinextras-common) do not live on the
+        // generic mavens, the second one is the mirror those artifacts are served from.
+        project.repositories.maven { repo ->
+            repo.name = "outlands-releases"
+            repo.url = URI.create("https://maven.outlands.top/releases/")
+            repo.content { it.excludeGroup("curse.maven") }
+        }
+        project.repositories.maven { repo ->
+            repo.name = "outlands-deps"
+            repo.url = URI.create("https://repo.cleanroommc.com/releases/")
+            repo.content { it.excludeGroup("curse.maven") }
+        }
         project.repositories.removeIf { it.name == "minecraft" }
         project.repositories.maven { repo ->
             repo.name = "minecraft"
@@ -214,6 +226,10 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
         config.properties["mcp_to_srg"] = {
             srgToMCPAsTSRG.absolutePathString()
         }
+        // FML reads the deobf map from this property in a dev environment (the resource inside the jar is only used
+        // when runtime deobfuscation is on, i.e. in production). The loader's own runs bridge it through
+        // MCP_TO_SRG -> com.cleanroommc.boot.Main, but a mod dev run launches Foundation directly.
+        config.jvmArgs("-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${srgToMCPAsTSRG.absolutePathString()}")
         val modClassPath = provider.mods.getClasspath()
         val extraPath = mutableSetOf<File>()
         project.logger.info("Path before: {}", config.classpath.files.toString())
@@ -237,6 +253,10 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
         config.properties["mcp_to_srg"] = {
             srgToMCPAsTSRG.absolutePathString()
         }
+        // FML reads the deobf map from this property in a dev environment (the resource inside the jar is only used
+        // when runtime deobfuscation is on, i.e. in production). The loader's own runs bridge it through
+        // MCP_TO_SRG -> com.cleanroommc.boot.Main, but a mod dev run launches Foundation directly.
+        config.jvmArgs("-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${srgToMCPAsTSRG.absolutePathString()}")
         val modClassPath = provider.mods.getClasspath()
         val extraPath = mutableSetOf<File>()
         project.logger.info("Path before: {}", config.classpath.files.toString())

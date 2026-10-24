@@ -253,7 +253,7 @@ gradlePlugin {
     plugins {
         create("simplePlugin") {
             id = "top.outlands.unimined"
-            implementationClass = "top.outlands.unimined.UniminedPlugin"
+            implementationClass = "xyz.wagyourtail.unimined.UniminedPlugin"
         }
     }
 }
