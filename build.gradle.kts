@@ -252,8 +252,8 @@ dokka {
 gradlePlugin {
     plugins {
         create("simplePlugin") {
-            id = "xyz.wagyourtail.unimined"
-            implementationClass = "xyz.wagyourtail.unimined.UniminedPlugin"
+            id = "top.outlands.unimined"
+            implementationClass = "top.outlands.unimined.UniminedPlugin"
         }
     }
 }
