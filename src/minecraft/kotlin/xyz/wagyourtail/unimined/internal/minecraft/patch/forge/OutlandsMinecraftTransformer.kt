@@ -41,6 +41,11 @@ import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.mcpconfig.MCP
 open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftProvider) : ForgeLikeMinecraftTransformer(project, provider, "Outlands"),
     OutlandsPatcher<JarModMinecraftTransformer> {
 
+    companion object {
+        /** Proxies the Outlands, Arcseekers, Forge and MCP hosts this loader resolves from. Override with `-Punimined.mirror`. */
+        const val DEFAULT_MIRROR: String = "https://nexus.jsdu.cn/repository/"
+    }
+
     override var forgeTransformer: JarModMinecraftTransformer by FinalizeOnRead(OutlandsFG3(project, this))
 
     init {
@@ -141,6 +146,25 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
     val devSourcesJar: File by lazy { loaderArtifact("dev-sources", "jar") }
 
     override fun addMavens() {
+        // One repository in front of everything this loader resolves, because the hosts below are all proxied by it and
+        // a cold build otherwise spends most of its time waiting for them one at a time. It is a fallback chain rather
+        // than a replacement: the originals stay in the list after it, so an artifact the mirror does not carry is still
+        // reachable.
+        //
+        // The URL is a property so the choice is the build's, not this class's: -Punimined.mirror=<url> points at
+        // another mirror, an empty value goes straight to the originals.
+        val mirror = (project.findProperty("unimined.mirror") as String?) ?: DEFAULT_MIRROR
+        if (mirror.isNotBlank()) {
+            val repo = project.repositories.maven { repo ->
+                repo.name = "outlands-mirror"
+                repo.url = URI.create(mirror)
+                repo.content { it.excludeGroup("curse.maven") }
+            }
+            // Declared first, so it is consulted first: `repositories.maven {}` appends, and appending a mirror after
+            // the slow hosts is the same as not having one.
+            project.repositories.remove(repo)
+            project.repositories.addFirst(repo)
+        }
         project.unimined.outlandsMaven()
         project.unimined.minecraftForgeMaven()
         // Our own releases (and the loader's dependency set: cleanmix, mixinextras-common) do not live on the
