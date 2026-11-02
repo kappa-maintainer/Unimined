@@ -63,6 +63,35 @@ abstract class ModsConfig {
 
     abstract fun modImplementation(action: ModRemapConfig.() -> Unit)
 
+    /**
+     * Marks dependencies as bundled inside the produced jar, from the `mods` block.
+     *
+     * Equivalent to calling `Project.contained(...)` in the `dependencies` block: both write to the same project-wide
+     * list, because a bundled dependency is a fact about the jar and not about one source set. The `mods` spelling
+     * exists for build scripts that configure everything Unimined-related in one place, and for Kotlin scripts that
+     * would otherwise need an import.
+     *
+     * The kind of each entry is derived from the configuration the dependency is declared in: one that is treated as a
+     * mod is bundled as a mod, anything else as a library.
+     *
+     * @see getBundledJars
+     */
+    abstract fun contained(vararg dependencies: Any)
+
+    /**
+     * Resolves what the produced jar should bundle.
+     *
+     * Each marked dependency is matched against the resolution that already happened, so the bundled copy is the one
+     * the code was compiled against; a dependency that no class path contains is resolved from its own declaration.
+     * Entries that cannot be bundled — a dev-namespace jar, two files claiming one name, an unresolvable declaration —
+     * are reported as errors rather than silently skipped, because every way this can go wrong produces a jar that
+     * looks fine and fails at runtime.
+     *
+     * Call this at execution time (`doLast`, or from a task input): it resolves configurations, and a remap
+     * configuration's original artifacts are only settled once the project has been evaluated.
+     */
+    abstract fun getBundledJars(): List<BundledJar>
+
     fun modImplementation(
         @DelegatesTo(value = ModRemapConfig::class, strategy = Closure.DELEGATE_FIRST)
         action: Closure<*>

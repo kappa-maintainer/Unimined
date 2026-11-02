@@ -18,6 +18,7 @@ import org.gradle.api.artifacts.Dependency
 import org.gradle.api.artifacts.ExternalModuleDependency
 import org.gradle.api.artifacts.ModuleDependency
 import org.gradle.api.artifacts.ResolvedArtifact
+import org.jetbrains.annotations.ApiStatus
 import xyz.wagyourtail.unimined.api.mapping.mixin.MixinRemapOptions
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftConfig
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.ForgeLikePatcher
@@ -47,6 +48,16 @@ class ModRemapProvider(
     val project: Project,
     val provider: MinecraftConfig,
 ) : ModRemapConfig(config) {
+    companion object {
+        /**
+         * The group prefix of the synthetic coordinates a remapped mod is supplied back under.
+         *
+         * Defined once because two places have to agree on it: the supply-back below, and anything that has to tell a
+         * remapped artifact (`remapped_com.example:mod`) apart from the module it came from (`com.example:mod`).
+         */
+        const val REMAPPED_GROUP_PREFIX = "remapped_"
+    }
+
     override var namespace: Namespace by FinalizeOnRead(LazyMutable { provider.mcPatcher.prodNamespace })
 
     private var catchAWNs by FinalizeOnRead(false)
@@ -207,6 +218,42 @@ class ModRemapProvider(
         }
     }
 
+    /**
+     * The original (production-namespace) artifact of every mod this configuration declares.
+     *
+     * Answers "what does this mod look like before remapping", which is what a bundled copy has to be: a jar built from
+     * the remapped output would contain class names that only resolve in a development environment.
+     *
+     * Reads [originalDepsFiles] by configuration rather than taking its values, because that map is filled per key —
+     * asking for `values` before anything was looked up would answer "no mods".
+     */
+    @ApiStatus.Internal
+    fun prodArtifacts(): List<Pair<ResolvedArtifact, File>> =
+        configurations.flatMap { configuration ->
+            originalDepsFiles[configuration].entries.map { it.key to it.value }
+        }
+
+    /**
+     * The artifact file itself, keyed by absolute path, mapped to the configuration that declared it.
+     *
+     * This is the identity answer for a file the build already knows. Before this existed the same question was answered
+     * by parsing `-mapped-` out of a file name, which guesses wrong as soon as two modules share a name or an artifact
+     * was renamed on the way in.
+     */
+    private val configByOriginalArtifactFile by lazy {
+        val configs = mutableMapOf<String, Configuration>()
+        for (c in configurations) {
+            for (file in originalDepsFiles[c].values) {
+                configs.putIfAbsent(file.absoluteFile.normalize().path, c)
+            }
+        }
+        configs
+    }
+
+    /**
+     * Last-resort identity: the name-based guess, kept for files that are neither a known output nor a known input (a
+     * copy of a mod jar somewhere else on the class path).
+     */
     private val configByOriginalArtifactName by lazy {
         val configs = mutableMapOf<String, Configuration>()
         for (c in configurations) {
@@ -221,8 +268,13 @@ class ModRemapProvider(
         file: File,
         targetNamespace: Namespace,
     ): Configuration? {
-        remappedFilesToConfigurations[file.absoluteFile.normalize().path]?.let {
+        val path = file.absoluteFile.normalize().path
+        remappedFilesToConfigurations[path]?.let {
             project.logger.debug("[Unimined/ModRemapper] {} is an output of {}", file, it)
+            return it
+        }
+        configByOriginalArtifactFile[path]?.let {
+            project.logger.debug("[Unimined/ModRemapper] {} is the input of {}", file, it)
             return it
         }
         var name = file.nameWithoutExtension
@@ -232,7 +284,7 @@ class ModRemapProvider(
         }
         name = name.substringBeforeLast("-mapped-", name)
         return configByOriginalArtifactName[name]?.also {
-            project.logger.debug("[Unimined/ModRemapper] $file is an output of $it")
+            project.logger.debug("[Unimined/ModRemapper] {} is matched to {} by file name only", file, it)
         }
     }
 
@@ -240,7 +292,7 @@ class ModRemapProvider(
         require(artifact.extension == null || artifact.extension == "jar") {
             "Remapped mod dependencies must be JARs: ${artifact.stringify()}"
         }
-        val group = "remapped_${artifact.moduleVersion.id.group}"
+        val group = REMAPPED_GROUP_PREFIX + artifact.moduleVersion.id.group
         val module = artifact.name
         val version = artifact.moduleVersion.id.version
         val extension = artifact.extension ?: "jar"
@@ -702,6 +754,7 @@ class ModRemapProvider(
                             project.logger,
                         ),
                         innerJarStripper,
+                        bundledDepsStripper,
                         AccessTransformerApplier.AtRemapper(
                             project.logger,
                             namespace,
@@ -906,6 +959,56 @@ class ModRemapProvider(
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
             .replace("'", "&apos;")
+
+    /**
+     * Drops a mod's bundled-dependency declaration from the copy that goes to a development run.
+     *
+     * See [McmodInfoStripper] for why the declaration has to go. Only the entry is written back when something was
+     * actually removed: reformatting an unrelated `mcmod.info` would make the remapped jar differ from its input for no
+     * reason, and the bytes of a file nobody touched are worth keeping.
+     */
+    private val bundledDepsStripper: OutputConsumerPath.ResourceRemapper =
+        object : OutputConsumerPath.ResourceRemapper {
+            override fun canTransform(
+                remapper: TinyRemapper,
+                relativePath: Path,
+            ): Boolean = relativePath.name == "mcmod.info"
+
+            override fun transform(
+                destinationDirectory: Path,
+                relativePath: Path,
+                input: InputStream,
+                remapper: TinyRemapper,
+            ) {
+                val output = destinationDirectory.resolve(relativePath)
+                output.parent.createDirectories()
+                val raw = input.readAllBytes()
+                when (val result = McmodInfoStripper.stripContainedDeps(raw)) {
+                    is McmodInfoStripper.Result.Stripped -> {
+                        Files.write(output, result.bytes)
+                        project.logger.info(
+                            "[Unimined/ModRemapper] {} declares bundled dependencies {}; removing the declaration from " +
+                                "the dev copy, because a development run does not extract nested jars. Depend on them " +
+                                "separately to have them remapped and loaded in dev.",
+                            relativePath,
+                            result.removed.joinToString(", "),
+                        )
+                    }
+                    is McmodInfoStripper.Result.Unreadable -> {
+                        // Copying it through keeps the jar intact; a warning is the most that can be said about a file
+                        // that could not be parsed.
+                        Files.write(output, raw)
+                        project.logger.warn(
+                            "[Unimined/ModRemapper] could not read {} while removing its bundled dependencies ({}); " +
+                                "the declaration is left as it is",
+                            relativePath,
+                            result.reason,
+                        )
+                    }
+                    McmodInfoStripper.Result.Unchanged -> Files.write(output, raw)
+                }
+            }
+        }
 
     private val innerJarStripper: OutputConsumerPath.ResourceRemapper =
         object : OutputConsumerPath.ResourceRemapper {

@@ -1,11 +1,17 @@
 package xyz.wagyourtail.unimined.internal.mods
 
+import org.gradle.api.InvalidUserDataException
 import org.gradle.api.Project
 import org.gradle.api.artifacts.Configuration
+import org.gradle.api.artifacts.Dependency
+import org.gradle.api.artifacts.ResolvedArtifact
 import org.jetbrains.annotations.ApiStatus
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftConfig
+import xyz.wagyourtail.unimined.api.mod.BundledJar
 import xyz.wagyourtail.unimined.api.mod.ModRemapConfig
 import xyz.wagyourtail.unimined.api.mod.ModsConfig
+import xyz.wagyourtail.unimined.api.mod.ContainedMark
+import xyz.wagyourtail.unimined.api.mod.ContainedModule
 import xyz.wagyourtail.unimined.api.unimined
 import xyz.wagyourtail.unimined.mapping.Namespace
 import xyz.wagyourtail.unimined.util.FinalizeOnRead
@@ -130,6 +136,119 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
             remapSettings.action()
             if (minecraft.obfuscated) remapSettings.doRemap()
         }
+    }
+
+    private fun requireEvaluated(what: String) {
+        // A remap configuration's original artifacts are settled by afterEvaluate, so resolving before that can
+        // snapshot the dependency list mid-edit. Anything that needs the answer must ask at execution time.
+        if (!project.state.executed) {
+            throw IllegalStateException(
+                "[Unimined/Contained ${project.path}:${minecraft.sourceSet.name}] $what was requested before the " +
+                    "project finished evaluating. Bundled dependencies are resolved from configurations, so ask for " +
+                    "them from a task (doLast, or a lazy task input) instead of from the build script body.",
+            )
+        }
+    }
+
+    /**
+     * Every file the dev class path contains, with the role it plays there.
+     *
+     * The three sources are asked in order of authority: a dependency declared in a remap configuration is a mod and its
+     * bundled copy has to be the production-namespace original rather than the remapped one; a dependency declared in
+     * [modDevImplementation] is a mod that only exists in dev names; everything else is an ordinary library. Modules
+     * already seen are not overwritten by a later source, so a dependency that is both a mod and reachable transitively
+     * stays a mod.
+     */
+    private fun classpathEntries(marks: List<ContainedMark>): List<ContainedPlanner.Entry> {
+        val entries = mutableListOf<ContainedPlanner.Entry>()
+        val known = mutableSetOf<ContainedModule>()
+
+        fun add(artifact: ResolvedArtifact, file: File, role: ContainedPlanner.Role) {
+            val classifier = artifact.classifier
+            val module = ContainedModule(artifact.moduleVersion.id.group, artifact.name, classifier)
+            if (!known.add(module)) {
+                project.logger.debug("[Unimined/Contained] {} already listed as {}, ignoring the {} copy", module, artifact.moduleVersion.id, role)
+                return
+            }
+            entries += ContainedPlanner.Entry(module, artifact.moduleVersion.id.version, file, role)
+        }
+
+        for (provider in remapConfigsResolved.values.distinct()) {
+            for ((artifact, file) in provider.prodArtifacts()) {
+                // A remap configuration expects production names, so a `dev`-classified artifact reaching it is either
+                // a mistake or something published in dev names on purpose. Either way it must not be packed: the
+                // published jar would carry mcp names. Classifying it here is what makes the refusal possible, since
+                // the file itself gives no hint.
+                val role =
+                    if (artifact.classifier == "dev") {
+                        ContainedPlanner.Role.DEV_CLASSIFIER
+                    } else {
+                        ContainedPlanner.Role.REMAPPED
+                    }
+                add(artifact, file, role)
+            }
+        }
+        for (configuration in listOf(modDevImplementation, modLibrary)) {
+            for (artifact in configuration.resolvedConfiguration.resolvedArtifacts) {
+                add(artifact, artifact.file, ContainedPlanner.Role.DEV_NAMESPACE)
+            }
+        }
+
+        // Only worth resolving the whole class path when a mark was not answered by the mod configurations, which is
+        // what tells a plain library apart from a mod.
+        val unanswered = marks.any { mark -> mark.module != null && entries.none { it.module == mark.module } }
+        if (unanswered) {
+            val runtime = project.configurations.findByName(minecraft.sourceSet.runtimeClasspathConfigurationName)
+            if (runtime != null) {
+                for (artifact in runtime.resolvedConfiguration.resolvedArtifacts) {
+                    val group = artifact.moduleVersion.id.group
+                    if (group.startsWith(ModRemapProvider.REMAPPED_GROUP_PREFIX)) {
+                        // The remapped output of a mod, already listed by its production original above.
+                        continue
+                    }
+                    add(artifact, artifact.file, ContainedPlanner.Role.PLAIN)
+                }
+            }
+        }
+        return entries
+    }
+
+    private val reportedContainedMessages = mutableSetOf<String>()
+
+    override fun contained(vararg dependencies: Any) {
+        val marks = project.unimined.containedMarks
+        for (dependency in dependencies) {
+            val resolved = if (dependency is Dependency) dependency else project.dependencies.create(dependency)
+            marks.declare(resolved, dependency.toString(), "mods { ${minecraft.sourceSet.name} }")
+        }
+    }
+
+    override fun getBundledJars(): List<BundledJar> {
+        val marks = project.unimined.containedMarks.declared()
+        if (marks.isEmpty()) {
+            return emptyList()
+        }
+        requireEvaluated("the bundled dependency list")
+        val devClassPath = minecraft.sourceSet.runtimeClasspath.files.map { it.absoluteFile.normalize() }.toSet()
+        val result = ContainedPlanner.plan(
+            marks,
+            classpathEntries(marks),
+            project.unimined.containedMarks::resolve,
+            devClassPath,
+        )
+        for (message in result.warnings) {
+            if (reportedContainedMessages.add(message)) {
+                project.logger.warn("[Unimined/Contained ${project.path}:${minecraft.sourceSet.name}] $message")
+            }
+        }
+        if (result.errors.isNotEmpty()) {
+            throw InvalidUserDataException(
+                "[Unimined/Contained ${project.path}:${minecraft.sourceSet.name}] cannot bundle " +
+                    "${result.errors.size} dependenc${if (result.errors.size == 1) "y" else "ies"}:\n" +
+                    result.errors.joinToString("\n") { "  - $it" },
+            )
+        }
+        return result.jars
     }
 
     override fun getClasspath(): Set<File> {

@@ -23,6 +23,10 @@ class UniminedPlugin: Plugin<Project> {
 
         val unimined = project.extensions.create("unimined", UniminedExtensionImpl::class.java, project)
 
+        // A bundled dependency is declared in the `dependencies` block, next to the dependency it copies into the jar,
+        // so marking it has to be callable there. See ContainedDependencyClosure for why that needs a closure.
+        unimined.containedMarks.installGroovySugar()
+
         if (Runtime.getRuntime().maxMemory() < 2L.gb) {
             project.logger.warn("")
             project.logger.warn("[Unimined] You have less than 2GB of memory allocated to gradle.")

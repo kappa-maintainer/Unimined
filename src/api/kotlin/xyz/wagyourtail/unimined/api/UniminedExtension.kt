@@ -10,6 +10,7 @@ import org.jetbrains.annotations.ApiStatus
 import org.jetbrains.annotations.ApiStatus.ScheduledForRemoval
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftConfig
 import xyz.wagyourtail.unimined.api.minecraft.patch.fabric.FabricLikeApiExtension
+import xyz.wagyourtail.unimined.api.mod.ContainedMarks
 import xyz.wagyourtail.unimined.api.source.task.MigrateMappingsTask
 import xyz.wagyourtail.unimined.util.FinalizeOnRead
 import xyz.wagyourtail.unimined.util.sourceSets
@@ -57,6 +58,7 @@ abstract class UniminedExtension(project: Project) : FabricLikeApiExtension(proj
     }
 
     var useGlobalCache: Boolean by FinalizeOnRead(true)
+
     var forceReload: Boolean by FinalizeOnRead(project.properties["unimined.forceReload"] == "true" || project.gradle.startParameter.isRefreshDependencies)
 
     /**
@@ -85,6 +87,15 @@ abstract class UniminedExtension(project: Project) : FabricLikeApiExtension(proj
 
     @get:ApiStatus.Internal
     abstract val minecrafts: MutableMap<SourceSet, MinecraftConfig>
+
+    /**
+     * The dependencies this project wants bundled inside its jar.
+     *
+     * Project-wide on purpose: a bundled dependency is a fact about the produced jar, and a project that builds one jar
+     * per loader needs the same copy in each of them.
+     */
+    @get:ApiStatus.Internal
+    val containedMarks: ContainedMarks = ContainedMarks(project)
 
     @get:ApiStatus.Internal
     abstract val minecraftConfiguration: Map<SourceSet, MinecraftConfig.() -> Unit>

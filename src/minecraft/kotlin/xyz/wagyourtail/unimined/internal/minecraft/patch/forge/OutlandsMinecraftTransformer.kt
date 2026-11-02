@@ -11,6 +11,8 @@ import org.gradle.api.file.FileCollection
 import org.jetbrains.annotations.ApiStatus
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.OutlandsPatcher
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftJar
+import xyz.wagyourtail.unimined.api.minecraft.task.AbstractRemapJarTask
+import xyz.wagyourtail.unimined.api.mod.JarMetadataConfig
 import xyz.wagyourtail.unimined.api.runs.RunConfig
 import xyz.wagyourtail.unimined.api.unimined
 import xyz.wagyourtail.unimined.internal.mapping.task.ExportMappingsTaskImpl
@@ -31,6 +33,7 @@ import java.net.URI
 import java.nio.file.FileSystem
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.Callable
 import kotlin.io.path.absolutePathString
 import kotlin.io.path.createDirectories
 import xyz.wagyourtail.unimined.internal.minecraft.patch.forge.fg3.mcpconfig.MCPConfig
@@ -43,6 +46,47 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
     init {
         atDependency = project.dependencies.create("top.outlands:accesstransformers:8.3.0")
         atMainClass = "net.minecraftforge.accesstransformer.TransformerProcessor"
+    }
+
+    override val jarMetadata = JarMetadataConfig()
+
+    /**
+     * Writes the declared jar-level metadata into the jar this task produced.
+     *
+     * Runs after the loader's own work (`super`), because the metadata describes the finished jar and a later step could
+     * still add entries. `output` is the remap task's intermediate file, which is what gets copied into the task's real
+     * output afterwards - the same point at which the other loaders insert their nested jars.
+     */
+    override fun afterRemapJarTask(
+        remapJarTask: AbstractRemapJarTask,
+        output: Path,
+    ) {
+        super.afterRemapJarTask(remapJarTask, output)
+        OutlandsMetadataWriter(project, jarMetadata).apply(output, provider.mods.getBundledJars())
+    }
+
+    /**
+     * The declared metadata is part of what the task produces, so changing it has to invalidate the task.
+     *
+     * Without this a project that adds `side "client"` sees nothing happen, because the remap ran already and its output
+     * is still up to date.
+     */
+    override fun configureRemapJar(task: AbstractRemapJarTask) {
+        super.configureRemapJar(task)
+        // A Callable, not a value: `configure` runs when the task is realized, which can be before a build script
+        // reaches its `outlands { jarMetadata { ... } }` block (a plugin applying it later, an `allprojects` block).
+        // Capturing the value here would freeze the configuration at whatever it was at that moment.
+        task.inputs.property("unimined.outlands.jarMetadata", Callable { jarMetadata.fingerprint() })
+        // Both are Callables for the same reason as above, and both are read at execution time by the writer, so the
+        // task has to be invalidated by exactly what it read.
+        task.inputs.files(Callable { provider.mods.getBundledJars().map { it.file } })
+        task.inputs.property(
+            "unimined.outlands.containedDeps",
+            Callable { provider.mods.getBundledJars().map { "${it.id}:${it.version}:${it.kind}" } },
+        )
+        // A bundled declaration that names a file another task writes gives no ordering on its own: resolving it during
+        // execution is too late for Gradle to add the edge, so the producers are declared here.
+        task.dependsOn(Callable { project.unimined.containedMarks.buildDependencies() })
     }
 
     @get:ApiStatus.Internal
