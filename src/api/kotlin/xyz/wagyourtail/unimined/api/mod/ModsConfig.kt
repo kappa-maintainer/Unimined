@@ -118,6 +118,23 @@ abstract class ModsConfig {
      * new consumer has to include everything that must be handed over to that realm — Cleanroom
      * turns the returned files into `outlands.dev.extrapath`, which puts each entry on
      * `LaunchClassLoader` *and* into its mod-candidate set.
+     *
+     * The files returned here are the ones a development run should use. That does not have to be the
+     * file a dependency resolution handed out: a dev-namespace mod whose access transformer was
+     * authored in production names is replaced by a rewritten copy, so the class path a run starts
+     * from still holds the original. Use [modFile] when the question is about such a class path entry.
      */
     abstract fun getClasspath(): Set<File>
+
+    /**
+     * The file a development run should use for a class path [entry] that a dependency resolution handed
+     * out, or `null` when that entry is not a mod.
+     *
+     * Exists because [getClasspath] and the class path a run starts from do not have to name the same
+     * file for the same dependency: an implementation may replace a resolved artifact with a derived
+     * copy. Comparing a class path entry against [getClasspath] would then answer "not a mod" for every
+     * replaced jar, which is how such a mod ends up on the application class loader and is never
+     * discovered as a mod.
+     */
+    open fun modFile(entry: File): File? = if (getClasspath().contains(entry)) entry else null
 }

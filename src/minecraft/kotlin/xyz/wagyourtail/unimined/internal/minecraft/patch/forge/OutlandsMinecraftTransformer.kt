@@ -12,6 +12,7 @@ import org.jetbrains.annotations.ApiStatus
 import xyz.wagyourtail.unimined.api.minecraft.patch.forge.OutlandsPatcher
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftJar
 import xyz.wagyourtail.unimined.api.minecraft.task.AbstractRemapJarTask
+import xyz.wagyourtail.unimined.api.minecraft.task.RemapJarTask
 import xyz.wagyourtail.unimined.api.mod.JarMetadataConfig
 import xyz.wagyourtail.unimined.api.runs.RunConfig
 import xyz.wagyourtail.unimined.api.unimined
@@ -78,6 +79,13 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
      */
     override fun configureRemapJar(task: AbstractRemapJarTask) {
         super.configureRemapJar(task)
+        // The declared access transformers are part of what the jar carries, so the remap has to know them: the loader
+        // resolves them from `mcmod.info` (there is no manifest attribute anymore), which means a `at "at/foo.cfg"` is
+        // a legal declaration the file name convention does not cover. Without this the AT would be shipped in dev
+        // names, and the loader would apply rules that never match a class.
+        if (task is RemapJarTask) {
+            task.accessTransformerPaths.set(project.provider { jarMetadata.accessTransformers.toList() })
+        }
         // A Callable, not a value: `configure` runs when the task is realized, which can be before a build script
         // reaches its `outlands { jarMetadata { ... } }` block (a plugin applying it later, an `allprojects` block).
         // Capturing the value here would freeze the configuration at whatever it was at that moment.
@@ -298,13 +306,15 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
         // when runtime deobfuscation is on, i.e. in production). The loader's own runs bridge it through
         // MCP_TO_SRG -> com.cleanroommc.boot.Main, but a mod dev run launches Foundation directly.
         config.jvmArgs("-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${srgToMCPAsTSRG.absolutePathString()}")
-        val modClassPath = provider.mods.getClasspath()
         val extraPath = mutableSetOf<File>()
         project.logger.info("Path before: {}", config.classpath.files.toString())
-        project.logger.info("Mod paths: {}", modClassPath.toString())
-        config.classpath = config.classpath.filter { 
-            if (it.isDirectory || modClassPath.contains(it)) {
-                extraPath += it
+        project.logger.info("Mod paths: {}", provider.mods.getClasspath().toString())
+        config.classpath = config.classpath.filter {
+            // The entry is not necessarily the file the run should use: a dev-namespace mod whose access transformer was
+            // rewritten is replaced by a copy, and the copy is what belongs in the extrapath. See ModsConfig.modFile.
+            val modFile = provider.mods.modFile(it)
+            if (it.isDirectory || modFile != null) {
+                extraPath += modFile ?: it
                 false
             } else {
                 true
@@ -325,13 +335,14 @@ open class OutlandsMinecraftTransformer(project: Project, provider: MinecraftPro
         // when runtime deobfuscation is on, i.e. in production). The loader's own runs bridge it through
         // MCP_TO_SRG -> com.cleanroommc.boot.Main, but a mod dev run launches Foundation directly.
         config.jvmArgs("-Dnet.minecraftforge.gradle.GradleStart.srg.srg-mcp=${srgToMCPAsTSRG.absolutePathString()}")
-        val modClassPath = provider.mods.getClasspath()
         val extraPath = mutableSetOf<File>()
         project.logger.info("Path before: {}", config.classpath.files.toString())
-        project.logger.info("Mod paths: {}", modClassPath.toString())
+        project.logger.info("Mod paths: {}", provider.mods.getClasspath().toString())
         config.classpath = config.classpath.filter {
-            if (it.isDirectory || modClassPath.contains(it)) {
-                extraPath += it
+            // See the client transform for why the entry and the file that gets handed over can differ.
+            val modFile = provider.mods.modFile(it)
+            if (it.isDirectory || modFile != null) {
+                extraPath += modFile ?: it
                 false
             } else {
                 true

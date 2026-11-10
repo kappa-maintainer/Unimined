@@ -99,6 +99,7 @@ abstract class RemapJarTaskImpl @Inject constructor(provider: MinecraftConfig):
             fromNs,
             toNs,
             isLegacy = remapATToLegacy.getOrElse((provider.mcPatcher as? ForgeLikePatcher<*>)?.remapAtToLegacy == true)!!,
+            atPaths = accessTransformerPaths.getOrElse(emptyList()),
             mappings = provider.mappings.resolve()
         ))
 

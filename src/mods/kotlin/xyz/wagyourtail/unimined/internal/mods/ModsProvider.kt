@@ -7,6 +7,7 @@ import org.gradle.api.artifacts.Dependency
 import org.gradle.api.artifacts.ResolvedArtifact
 import org.jetbrains.annotations.ApiStatus
 import xyz.wagyourtail.unimined.api.minecraft.MinecraftConfig
+import xyz.wagyourtail.unimined.api.minecraft.patch.forge.ForgeLikePatcher
 import xyz.wagyourtail.unimined.api.mod.BundledJar
 import xyz.wagyourtail.unimined.api.mod.ModRemapConfig
 import xyz.wagyourtail.unimined.api.mod.ModsConfig
@@ -75,6 +76,24 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
     }
 
     private var default by FinalizeOnRead<ModRemapProvider.() -> Unit> {}
+
+    /**
+     * Rewrites the access transformers of [modDevImplementation] entries into the dev namespace.
+     *
+     * Lazy because it reads the patcher and the mapping identity, both of which are only final once the project has
+     * been evaluated - and because a project without such dependencies never has to pay for the mappings fingerprint.
+     */
+    private val devAtNormalizer by lazy {
+        DevAtNormalizer(
+            logger = project.logger,
+            cacheDirectory = project.unimined.getLocalCache().resolve("devMods"),
+            fromNamespace = minecraft.mcPatcher.prodNamespace,
+            toNamespace = minecraft.mappings.devNamespace,
+            isLegacy = (minecraft.mcPatcher as? ForgeLikePatcher<*>)?.remapAtToLegacy == true,
+            mappingsId = { minecraft.mappings.combinedNames() },
+            mappings = { minecraft.mappings.resolve() },
+        )
+    }
 
     val remapConfigsResolved = mutableMapOf<Configuration, ModRemapProvider>()
 
@@ -258,11 +277,21 @@ class ModsProvider(val project: Project, val minecraft: MinecraftConfig) : ModsC
         // LibraryManager.getCandidates(), which is exactly where CleanroomModDiscoverer looks for
         // mods. Leaving them out means a dev-classifier mod jar is loaded by the application
         // classloader instead and is never discovered as a mod at all.
+        //
+        // Their access transformers are a separate axis: the classes are dev-named by definition, but
+        // the AT was authored in whichever namespace the jar was built for, and a published one is
+        // srg-named. That file is what [devAtNormalizer] rewrites, on a copy - see there for why.
         return (
             remapConfigsResolved.keys.flatMap { it.resolve() } +
-                modDevImplementation.resolve() +
-                modLibrary.resolve()
+                listOf(modDevImplementation, modLibrary).flatMap { it.resolve() }.map { devAtNormalizer.normalize(it) }
         ).toSet()
+    }
+
+    override fun modFile(entry: File): File? {
+        // Reading the class path is also what normalizes the dev jars, which is what fills the replacement map this
+        // falls back to. Asking the other way around would answer "not a mod" for every rewritten jar.
+        if (getClasspath().contains(entry)) return entry
+        return devAtNormalizer.replacementFor(entry)
     }
 
     override fun getClasspathAs(namespace: Namespace, classpath: Set<File>): Set<File> {

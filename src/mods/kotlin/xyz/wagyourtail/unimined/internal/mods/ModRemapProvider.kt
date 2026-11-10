@@ -35,7 +35,6 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.CompletableFuture
-import java.util.jar.JarFile
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
@@ -422,7 +421,7 @@ class ModRemapProvider(
      * produced them, so this is what makes an Unimined upgrade re-remap instead of silently reusing
      * the previous behaviour's output.
      */
-    private val remapCacheFormat = 2
+    private val remapCacheFormat = 3
 
     /**
      * Everything that changes the bytes of a remapped mod: the cache format, the namespace pair, the
@@ -734,12 +733,22 @@ class ModRemapProvider(
     ) = runBlocking {
         val inpFile = input.second.first
         val targetFile = input.second.second
-        val manifest =
-            JarFile(inpFile)
-                .use { it.manifest }
-                ?.mainAttributes
-                ?.getValue("FMLAT")
-                ?.split(" ") ?: emptyList()
+        // Read the declaration the way the loader does: the `at` key of the `jar` section of `mcmod.info` first, the
+        // `FMLAT` manifest attribute only as a fallback. A dependency that moved its declaration into the metadata and
+        // dropped the attribute would otherwise reach a development run with nothing remapped, and an AT left in srg
+        // names is not an error there - it is a rule that never matches.
+        val atPaths =
+            try {
+                JarAccessTransformers.of(inpFile.toPath(), project.logger)
+            } catch (e: Exception) {
+                project.logger.warn(
+                    "[Unimined/ModRemapper] could not read the access transformer declaration of {} ({}); " +
+                        "falling back to the file name convention",
+                    inpFile.name,
+                    e.message,
+                )
+                emptyList()
+            }
         project.logger.info("[Unimined/ModRemapper] Remapping mod from $inpFile -> $targetFile with mapping target $toNs")
         try {
             OutputConsumerPath.Builder(targetFile).build().use {
@@ -760,7 +769,7 @@ class ModRemapProvider(
                             namespace,
                             toNs,
                             remapAtToLegacy,
-                            manifest,
+                            atPaths,
                             provider.mappings.resolve(),
                         ),
                     ) + NonClassCopyMode.FIX_META_INF.remappers,
